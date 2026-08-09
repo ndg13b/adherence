@@ -95,6 +95,7 @@ class CohortLoadResult:
     t_start: float
     t_end: float
     gap_minutes: float
+    n_out_of_range: int = 0
 
     def summary(self) -> str:
         ev = np.array([len(v) for v in self.logs.values()]) if self.logs else np.zeros(1)
@@ -119,6 +120,7 @@ def load_event_csv(
     min_events: int = 8,
     min_days: float = 5.0,
     tz: str = "UTC",
+    window: str = "person",
     max_users: int | None = None,
     progress_every: int = 2_000_000,
     verbose: bool = True,
@@ -173,11 +175,23 @@ def load_event_csv(
                 continue
 
     return _finalize(per_user, ZoneInfo(tz), gap_minutes, min_events, min_days,
-                     n_rows, len(seen))
+                     n_rows, len(seen), window=window)
 
 
-def _finalize(per_user, tzinfo, gap_minutes, min_events, min_days, n_rows, n_seen):
-    """Merge bursts, apply inclusion rules, and build one EventLog per person."""
+def _finalize(per_user, tzinfo, gap_minutes, min_events, min_days, n_rows, n_seen,
+              window: str = "person"):
+    """Merge bursts, apply inclusion rules, and build one EventLog per person.
+
+    ``window`` sets each person's observation period, and the choice is not
+    cosmetic. ``"global"`` spans the whole dataset, which is right for a trial
+    where everyone is enrolled over the same period. ``"person"`` uses their own
+    first-to-last event, which is right for an app people join and leave at
+    different times -- and is the only safe default when the dataset spans
+    years, because the binned indices (Interdaily Stability, SRI) build a
+    day-by-bin grid over the window. Give those a decade-long grid for someone
+    observed six months and it is ~99% empty, which drives SRI to 100 and IS to
+    0 for everyone regardless of their actual routine.
+    """
     merged = {u: merge_sessions(np.array(v, dtype=float), gap_minutes)
               for u, v in per_user.items()}
     all_t = [t for v in merged.values() for t in (v[0], v[-1]) if v.size]
@@ -191,10 +205,8 @@ def _finalize(per_user, tzinfo, gap_minutes, min_events, min_days, n_rows, n_see
             continue
         if (t[-1] - t[0]) / SECONDS_PER_DAY < min_days:
             continue
-        # Global window, not the person's own first/last event: otherwise
-        # someone who quit on day 3 looks like a dense 3-day user rather than a
-        # sparse one, and their rate is meaningless.
-        logs[uid] = EventLog.from_records(t, tz=tzinfo, t_start=t_start, t_end=t_end)
+        lo, hi = (float(t[0]), float(t[-1])) if window == "person" else (t_start, t_end)
+        logs[uid] = EventLog.from_records(t, tz=tzinfo, t_start=lo, t_end=hi)
 
     return CohortLoadResult(
         logs=logs,
@@ -251,6 +263,9 @@ def load_fitrec(
     min_events: int = 20,
     min_days: float = 30.0,
     localize: bool = True,
+    window: str = "person",
+    min_year: int | None = 2005,
+    max_year: int | None = 2020,
     max_users: int | None = None,
     progress_every: int = 50_000,
     verbose: bool = True,
@@ -273,10 +288,23 @@ def load_fitrec(
     ``sport`` filters to one activity. Worth considering: someone who runs at
     07:00 and cycles at weekends has two routines, and pooling them looks like
     one incoherent routine.
+
+    ``min_year``/``max_year`` drop implausible timestamps. Real logs contain
+    them -- a handful of records dated 1970 or 2038 stretched the observed span
+    of this dataset to nineteen years, which silently wrecks any index computed
+    over a day-by-bin grid. Pass ``None`` to keep everything and see the damage.
     """
+    from datetime import datetime, timezone
+
+    t_lo = (datetime(min_year, 1, 1, tzinfo=timezone.utc).timestamp()
+            if min_year else -np.inf)
+    t_hi = (datetime(max_year, 1, 1, tzinfo=timezone.utc).timestamp()
+            if max_year else np.inf)
+
     per_user: dict[str, list[float]] = {}
     lons: dict[str, list[float]] = {}
     n_rows = 0
+    n_out_of_range = 0
     seen: set[str] = set()
 
     with open_text(path) as fh:
@@ -290,6 +318,9 @@ def load_fitrec(
                 continue
             uid, t, lon, sp = parsed
             if sport is not None and sp != sport:
+                continue
+            if not (t_lo <= t < t_hi):
+                n_out_of_range += 1
                 continue
             seen.add(uid)
             if not in_sample(uid, sample_pct):
@@ -307,8 +338,76 @@ def load_fitrec(
                 offset = round(float(np.median(lons[uid])) / 15.0) * 3600.0
                 per_user[uid] = [t + offset for t in ts]
 
-    return _finalize(per_user, ZoneInfo("UTC"), gap_minutes, min_events, min_days,
-                     n_rows, len(seen))
+    if verbose and n_out_of_range:
+        print(f"    dropped {n_out_of_range:,} workouts outside "
+              f"{min_year}-{max_year}")
+    res = _finalize(per_user, ZoneInfo("UTC"), gap_minutes, min_events, min_days,
+                    n_rows, len(seen), window=window)
+    res.n_out_of_range = n_out_of_range
+    return res
+
+
+def peek_fitrec(path: str, n_records: int = 2, scan: int = 100_000,
+                truncate: int = 260) -> None:
+    """Print what is actually in a FitRec file, before trusting any score.
+
+    Written because the first real run produced two impossible readings -- a
+    19-year span and a near-empty 06:00-09:00 -- and guessing at the cause from
+    summary statistics is slower and less reliable than looking at the records.
+    """
+    from datetime import datetime, timezone
+
+    print(f"First {n_records} raw records (truncated):\n")
+    times, lons, sports, bad = [], [], {}, 0
+    with open_text(path) as fh:
+        for i, line in enumerate(fh):
+            if i < n_records:
+                print(f"  [{i}] {line[:truncate]}...\n")
+            if i >= scan:
+                break
+            parsed = _parse_fitrec_line(line)
+            if parsed is None:
+                bad += 1
+                continue
+            _, t, lon, sp = parsed
+            times.append(t)
+            if lon is not None:
+                lons.append(lon)
+            sports[sp] = sports.get(sp, 0) + 1
+
+    def when(x):
+        try:
+            return datetime.fromtimestamp(x, timezone.utc).strftime("%Y-%m-%d %H:%M")
+        except (OSError, ValueError, OverflowError):
+            return f"UNREPRESENTABLE ({x:.0f})"
+
+    t = np.array(times)
+    print(f"Scanned {min(scan, len(times) + bad):,} lines; {bad:,} unparseable\n")
+    print("Workout start timestamps:")
+    for label, q in [("min", 0), ("1%", 1), ("50%", 50), ("99%", 99), ("max", 100)]:
+        print(f"  {label:>4s}  {when(np.percentile(t, q))}")
+    lo, hi = np.percentile(t, [1, 99])
+    print(f"  -> 1-99% span {(hi - lo) / SECONDS_PER_DAY:.0f} days, "
+          f"full span {(t.max() - t.min()) / SECONDS_PER_DAY:.0f} days")
+    if (t.max() - t.min()) > 1.5 * (hi - lo):
+        print("  -> OUTLIERS: the tails stretch the span well beyond the bulk.\n"
+              "     Use --min-year / --max-year to drop them.")
+
+    if lons:
+        lo_arr = np.array(lons)
+        print(f"\nLongitude: {len(lons):,}/{len(times):,} records have one, "
+              f"range {lo_arr.min():.1f} to {lo_arr.max():.1f}, "
+              f"median {np.median(lo_arr):.1f}")
+        if lo_arr.min() > -181 and lo_arr.max() < 181 and abs(lo_arr).max() > 5:
+            print("  -> looks like real degrees; localisation should work")
+        else:
+            print("  -> NOT plausible degrees. Localisation will be wrong; "
+                  "rerun with --no-localize")
+    else:
+        print("\nLongitude: absent -- times stay in UTC")
+
+    print("\nSports: " + ", ".join(f"{k}={v:,}" for k, v in
+                                   sorted(sports.items(), key=lambda kv: -kv[1])[:8]))
 
 
 def load_duolingo(path: str, **kw) -> CohortLoadResult:

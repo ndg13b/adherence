@@ -14,6 +14,7 @@ import zipfile
 import numpy as np
 import pytest
 
+from adherence.events import EventLog
 from adherence.datasets import (
     DUOLINGO_COLUMNS,
     hour_of_day_histogram,
@@ -169,13 +170,49 @@ def test_inclusion_thresholds_are_applied(synthetic):
     assert all(len(v) >= 25 for v in strict.logs.values())
 
 
-def test_all_people_share_one_observation_window(synthetic):
-    """Rates are only comparable if exposure is measured on a common window."""
-    res = load_duolingo(synthetic, sample_pct=100.0, min_events=5, min_days=3,
-                        verbose=False)
-    starts = {v.t_start for v in res.logs.values()}
-    ends = {v.t_end for v in res.logs.values()}
-    assert len(starts) == 1 and len(ends) == 1
+def test_observation_window_modes(synthetic):
+    """Per-person exposure by default; a shared window on request.
+
+    The default matters on datasets spanning years: the binned indices build a
+    day-by-bin grid over the window, so handing someone observed for six months
+    a decade-long grid makes it ~99% empty and pins SRI near 100 for everyone.
+    """
+    kw = dict(sample_pct=100.0, min_events=5, min_days=3, verbose=False)
+    per_person = load_duolingo(synthetic, window="person", **kw)
+    shared = load_duolingo(synthetic, window="global", **kw)
+
+    assert len({v.t_start for v in shared.logs.values()}) == 1
+    assert len({v.t_start for v in per_person.logs.values()}) > 1
+    for log in per_person.logs.values():
+        assert log.t_start == log.t[0] and log.t_end == log.t[-1]
+
+
+def test_person_window_keeps_binned_indices_meaningful():
+    """An over-long observation window destroys the binned indices.
+
+    The same flawlessly regular person -- 60 consecutive days at 08:00 -- scores
+    Interdaily Stability 1.0 on their own window and 0.016 inside a ten-year
+    one, because the day-by-bin grid is then almost entirely empty and the
+    between-day variance the index divides by is all padding. That is a
+    sixtyfold distortion driven purely by bookkeeping, and it is why the
+    per-person window is the default.
+
+    SRI cannot demonstrate it: a perfect routine already pins it at 100, with no
+    headroom to move. Its failure mode on a stretched window is the opposite --
+    everyone gets pinned near the ceiling together.
+    """
+    from datetime import datetime, timezone
+
+    from adherence.baselines import interdaily_stability, sleep_regularity_index
+
+    base = datetime(2015, 1, 5, tzinfo=timezone.utc).timestamp()
+    t = np.array([base + d * 86400 + 8 * 3600 for d in range(60)])
+    own = EventLog.from_records(t, t_start=t[0], t_end=t[-1])
+    stretched = EventLog.from_records(t, t_start=t[0], t_end=t[0] + 3650 * 86400)
+
+    assert interdaily_stability(own) > 0.9
+    assert interdaily_stability(stretched) < 0.1
+    assert sleep_regularity_index(stretched) > 99.0  # pinned, not informative
 
 
 def test_epoch_ms_and_iso_time_formats(tmp_path):
