@@ -166,13 +166,19 @@ def _loo_kernel_score(phase, w, kern, groups) -> float:
             continue
         p, ww = phase[g], w[g]
         total = ww.sum()
-        if total <= 0:
+        if not np.isfinite(total) or total <= 0:
             continue
-        # Full KDE at each event (self included), then subtract the self term.
-        dens_all = _weighted_kde(p, p, ww, kern) * total
-        loo = (dens_all - ww * peak) / np.maximum(total - ww, 1e-12)
+        # Rescale so the weights sum to 1 within the group. Only their ratios
+        # carry meaning, and without this the score depends on their absolute
+        # size: recency weights are 2^(-age/half-life), so an observation window
+        # ending years after a person's last event drives every weight to ~1e-16,
+        # the leave-one-out denominator below its floor, and the whole score to
+        # zero. That silently zeroed real routines before it was caught.
+        ww = ww / total
+        dens_all = _weighted_kde(p, p, ww, kern)
+        loo = (dens_all - ww * peak) / np.maximum(1.0 - ww, 1e-12)
         num += float((ww * loo).sum())
-        den += float(total)
+        den += 1.0
     if den <= 0:
         return float("nan")
     return float(np.clip((num / den - uniform) / (peak - uniform), 0.0, 1.0))

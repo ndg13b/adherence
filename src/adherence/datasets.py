@@ -409,6 +409,33 @@ def peek_fitrec(path: str, n_records: int = 2, scan: int = 100_000,
     print("\nSports: " + ", ".join(f"{k}={v:,}" for k, v in
                                    sorted(sports.items(), key=lambda kv: -kv[1])[:8]))
 
+    # Raw against localised, side by side. A localisation that helps sharpens the
+    # profile and pushes the trough into the small hours; one that hurts shifts
+    # the whole curve somewhere implausible, and only the comparison shows which.
+    if lons and len(times) == len(lons):
+        print("\nHour-of-day profile, raw UTC vs longitude-localised:")
+        raw_h = _hour_hist(np.array(times))
+        off = np.round(np.array(lons) / 15.0) * 3600.0
+        loc_h = _hour_hist(np.array(times) + off)
+        print(f"  {'hr':>3s} {'raw':>7s} {'local':>7s}")
+        for h in range(24):
+            bar_r = "#" * int(round(24 * raw_h[h] / max(raw_h.max(), 1e-9)))
+            bar_l = "#" * int(round(24 * loc_h[h] / max(loc_h.max(), 1e-9)))
+            print(f"  {h:02d}  {raw_h[h]:7.3f} {loc_h[h]:7.3f}  {bar_r:<25s}|{bar_l}")
+        print(f"\n  raw   trough {int(raw_h.argmin()):02d}:00, peak {int(raw_h.argmax()):02d}:00")
+        print(f"  local trough {int(loc_h.argmin()):02d}:00, peak {int(loc_h.argmax()):02d}:00")
+        print("  Exercise should trough overnight (roughly 01:00-05:00). Whichever\n"
+              "  column does that is the one to trust; if neither does, the\n"
+              "  timestamps are not local wall-clock time and no clock label here\n"
+              "  is meaningful -- though the consistency scores survive, being\n"
+              "  invariant to a constant shift.")
+
+
+def _hour_hist(t: np.ndarray, bins: int = 24) -> np.ndarray:
+    idx = ((t % SECONDS_PER_DAY) / SECONDS_PER_DAY * bins).astype(int) % bins
+    counts = np.bincount(idx, minlength=bins).astype(float)
+    return counts / max(counts.sum(), 1.0)
+
 
 def load_duolingo(path: str, **kw) -> CohortLoadResult:
     """Duolingo learning traces (Settles & Meeder 2016).

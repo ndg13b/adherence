@@ -72,6 +72,11 @@ def main(argv=None) -> int:
     p.add_argument("--window", choices=["person", "global"], default="person",
                    help="observation window per person (default person)")
     p.add_argument("--bandwidth-scan", action="store_true")
+    p.add_argument("--half-life", type=float, default=28.0,
+                   help="recency half-life in days (default 28). Far too short for\n"
+                        "multi-year histories -- try --half-life-scan first")
+    p.add_argument("--half-life-scan", action="store_true",
+                   help="scan recency half-lives; reuses the single pass over the file")
     p.add_argument("--with-anchor-precision", action="store_true")
     p.add_argument("--out", default=None, help="write per-person scores to this CSV")
     args = p.parse_args(argv)
@@ -113,9 +118,10 @@ def main(argv=None) -> int:
     print(f"  loaded in {time.time() - t0:.0f}s")
 
     out = screen(
-        res, bandwidth_min=args.bandwidth,
+        res, bandwidth_min=args.bandwidth, half_life_days=args.half_life,
         with_anchor_precision=args.with_anchor_precision,
         do_bandwidth_scan=args.bandwidth_scan or args.self_test,
+        do_half_life_scan=args.half_life_scan,
     )
     if args.out and out:
         write_scores(args.out, res.logs, out["model"])
