@@ -191,6 +191,50 @@ tested at all.
 A useful by-product: the bandwidth curve is a cheap screening test for whether a
 candidate dataset contains routines *before* investing in a retention analysis.
 
+## Second contact: exercise, and the first anchored population
+
+The FitRec/Endomondo release (253k workouts, 1,104 people, 2011–2016). Restricted
+to **running only**, 626 people with a median of 116 runs each:
+
+| | Duolingo | FitRec, all sports | FitRec, running only |
+|---|---|---|---|
+| bandwidth optimum | 240 min | 360 min | **30 min** |
+| verdict | no anchor | no anchor | **ANCHORED** |
+| reliability | 0.575 | 0.593 | **0.928** |
+| vs. log(sessions) | −0.12 | +0.04 | **−0.07** |
+
+**Pooling sports destroyed the signal.** All sports together gave a 360-minute
+optimum and no anchor; running alone peaks at 30 minutes and declines. Both
+bandwidth scans used the same 28-day half-life, so the flip is attributable to
+the sport filter alone. Someone who runs at 07:00 on weekdays and cycles on
+Saturday afternoons has two routines, and pooling them looks like one incoherent
+one. Any future analysis has to separate activities before scoring them.
+
+**The 28-day half-life was discarding most of each history.** Reliability climbs
+0.554 → 0.936 as the half-life lengthens to no decay, so these routines are
+stable over *years*. The default is right for a two-week dataset and wasteful for
+a multi-year one; there is now a `half_life_scan` to settle it per dataset.
+
+**Clock labels here are meaningless, but the scores are not.** Neither the raw
+UTC profile nor the longitude-localised one troughs overnight — both peak near
+midnight and empty out at 08:00–09:00, which no exercise population does. So
+these timestamps are not local wall-clock time. The consistency scores survive,
+being invariant to a constant shift, but with one caveat worth stating: if the
+offset varies *within* a person (upload rather than start times would do this),
+the extra noise makes every consistency estimate here a **lower bound**. The
+routines are at least as tight as measured, possibly tighter.
+
+**The frequency confound, at its most extreme.** With 939 people the Sleep
+Regularity Index correlated **−1.00** with log session count. It is a session
+counter. `timing_consistency` sits at −0.07.
+
+So exercise is the first real population carrying the phenomenon the concept is
+about, and the retention question is finally askable on it. See
+`examples/fitrec_retention.py`, which scores a run-in window, follows people to
+their last run with the still-active censored, and — critically — adjusts for
+baseline frequency, since people who run often keep running and an unadjusted
+result would be trivial.
+
 ## Where this could break on real data
 
 Stated plainly, because these are the things that would sink a study.

@@ -555,6 +555,8 @@ def write_synthetic_fitrec(
     days: int = 365,
     workouts_per_week: float = 3.0,
     identical_people: bool = False,
+    dropout_hazard: float = 0.0,
+    log_hazard_ratio: float = 0.0,
     seed: int = 0,
 ) -> str:
     """Write a small file imitating the FitRec release, for dry runs and tests.
@@ -563,6 +565,14 @@ def write_synthetic_fitrec(
     sensor sequences padded around the fields that matter. Exercise is simulated
     with tight anchors on a few fixed weekdays, which is the pattern the real
     data would need to show for the concept to be testable there.
+
+    ``dropout_hazard`` with ``log_hazard_ratio`` builds in a link between
+    irregularity and quitting: each person's daily hazard is
+    ``dropout_hazard * exp(log_hazard_ratio * z)`` for standardised log-jitter
+    ``z``, so a positive ratio makes irregular people quit sooner. That is what
+    lets the retention pipeline be checked end to end against a known answer --
+    file, loader, score, Cox fit. It is an assumption baked into the generator,
+    never evidence about real behaviour.
     """
     from datetime import datetime, timezone
 
@@ -570,20 +580,27 @@ def write_synthetic_fitrec(
 
     rng = np.random.default_rng(seed)
     start = datetime(2014, 1, 6, tzinfo=timezone.utc)
+    mu, sigma = np.log(25.0), 0.9
     lines = []
     for u in range(n_users):
-        jitter = 20.0 if identical_people else float(rng.lognormal(np.log(25.0), 0.9))
+        jitter = 20.0 if identical_people else float(rng.lognormal(mu, sigma))
         hour = float(rng.uniform(5.5, 21.0))
         n_days_wk = int(np.clip(round(workouts_per_week), 1, 7))
         days_of_week = tuple(rng.choice(7, size=n_days_wk, replace=False).tolist())
         lon = float(rng.uniform(-125, 25))
+        z = (np.log(jitter) - mu) / sigma
         prof = PersonProfile(
             slots=[Slot(hour=hour, jitter_min=min(jitter, 300.0),
                         days=days_of_week, p=0.8)],
+            dropout_hazard=float(np.clip(dropout_hazard * np.exp(log_hazard_ratio * z),
+                                         0.0, 0.5)),
             name=f"u{u}",
         )
         log, _ = simulate_person(prof, start, days=days,
-                                 rng=int(rng.integers(1 << 30)), dropout=False)
+                                 rng=int(rng.integers(1 << 30)),
+                                 dropout=dropout_hazard > 0)
+        if len(log) == 0:
+            continue
         # Undo the localisation the loader will apply, so the round trip lands
         # back on the simulated local hour.
         shift = round(lon / 15.0) * 3600.0

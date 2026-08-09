@@ -322,3 +322,41 @@ def test_fitrec_localisation_recovers_local_hour(tmp_path):
     assert local[5:21].sum() > 0.95
     assert raw[5:21].sum() < local[5:21].sum() - 0.1
     assert local[2:5].sum() < raw[2:5].sum() / 3.0
+
+
+def test_retention_pipeline_recovers_a_known_hazard_ratio(tmp_path):
+    """End-to-end: file -> loader -> run-in score -> Cox fit, against known truth.
+
+    The generator links irregularity to quitting with a specified log hazard
+    ratio. Every stage between the file and the coefficient is exercised, so a
+    break anywhere -- a mis-parsed timestamp, a leaking run-in window, a sign
+    flip in the covariate -- shows up as a coefficient pointing the wrong way.
+    """
+    import importlib.util
+
+    from adherence.datasets import load_fitrec, write_synthetic_fitrec
+
+    spec = importlib.util.spec_from_file_location(
+        "ret", str(__import__("pathlib").Path(__file__).parent.parent
+                   / "examples" / "fitrec_retention.py"))
+    ret = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ret)
+
+    p = write_synthetic_fitrec(str(tmp_path / "linked.json"), n_users=500, days=700,
+                               dropout_hazard=0.004, log_hazard_ratio=1.0, seed=3)
+    res = load_fitrec(p, sample_pct=100.0, min_events=20, min_days=120, verbose=False)
+    end = max(v.t[-1] for v in res.logs.values())
+    rows, _ = ret.build_cohort(res.logs, 90.0, end, 120.0, 8)
+
+    assert len(rows) > 100
+    event = np.array([r[3] for r in rows])
+    assert 0.1 < event.mean() < 0.95, "need both events and censoring to fit"
+
+    from adherence.survival import cox_ph
+
+    s = np.array([r[0] for r in rows])
+    x = -(s - s.mean()) / s.std()  # irregularity
+    fit = cox_ph(x[:, None], np.array([r[2] for r in rows]), event)
+    assert fit.converged
+    assert fit.coef[0] > 0, "irregular people were simulated to quit sooner"
+    assert fit.p[0] < 0.05
