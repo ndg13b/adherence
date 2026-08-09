@@ -183,8 +183,10 @@ python examples/duolingo_check.py --self-test              # dry run, ~5 seconds
 python examples/duolingo_check.py learning_traces.13m.csv.gz
 ```
 
-Accepts `.csv`, `.csv.gz` or `.zip`. Streaming the full file takes under a
-minute; scoring adds a minute or two.
+The examples add `src/` to the path themselves, so they run from a fresh clone
+whether or not you have run `pip install -e .`. Accepts `.csv`, `.csv.gz` or
+`.zip` — no need to unpack. Streaming the full file takes under a minute;
+scoring adds a minute or two.
 
 It answers one question: **do people genuinely differ in timing consistency, or
 is the apparent spread just noise?** That distinction is the whole ballgame, and

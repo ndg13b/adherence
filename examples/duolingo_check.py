@@ -27,13 +27,21 @@ suspect filtering.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
+from pathlib import Path
 
+# Run straight from a clone, with or without `pip install -e .`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from adherence import RoutineModel
-from adherence.datasets import hour_of_day_histogram, load_duolingo
-from adherence.validate import OPTIONAL_SCORERS, SCORERS, reliability_report
+from adherence import RoutineModel  # noqa: E402
+from adherence.datasets import hour_of_day_histogram, load_duolingo  # noqa: E402
+from adherence.validate import (  # noqa: E402
+    OPTIONAL_SCORERS,
+    SCORERS,
+    reliability_report,
+)
 
 
 def print_hour_profile(logs) -> None:
@@ -90,7 +98,8 @@ def main(argv=None) -> int:
         from adherence.datasets import write_synthetic_duolingo
 
         args.file = write_synthetic_duolingo(
-            f"{tempfile.mkdtemp()}/synthetic_traces.csv.gz", n_users=300, days=14
+            os.path.join(tempfile.mkdtemp(), "synthetic_traces.csv.gz"),
+            n_users=300, days=14,
         )
         args.sample_pct = 100.0
         print("SELF-TEST: scoring simulated people in the Duolingo file format.")
@@ -98,6 +107,10 @@ def main(argv=None) -> int:
         print("clear reliability and a PROCEED verdict. Nothing here is real data.\n")
     elif not args.file:
         p.error("provide a data file, or pass --self-test")
+    elif not os.path.exists(args.file):
+        print(f"No such file: {args.file}\n")
+        _suggest_files()
+        return 2
 
     t0 = time.time()
     print(f"Loading {args.file}")
@@ -158,6 +171,24 @@ def main(argv=None) -> int:
 
     print(f"\nTotal time {time.time() - t0:.0f}s")
     return 0
+
+
+def _suggest_files() -> None:
+    """Point at plausible data files nearby rather than just failing."""
+    roots = [Path.cwd(), Path(__file__).resolve().parent.parent]
+    seen, found = set(), []
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        for pat in ("*.csv", "*.csv.gz", "*.zip", "*.gz"):
+            found += [p for p in root.glob(pat) if p.stat().st_size > 1_000_000]
+    if found:
+        print("Data files found nearby -- did you mean one of these?")
+        for p in sorted(set(found))[:8]:
+            print(f"  python examples/duolingo_check.py \"{p}\"   ({p.stat().st_size / 1e6:.0f} MB)")
+    else:
+        print("Pass the path to learning_traces.13m.csv.gz (or the .zip), or use --self-test.")
 
 
 def _write_scores(path, logs, model, scorers) -> None:
