@@ -214,3 +214,74 @@ def test_hour_histogram_sums_to_one(synthetic):
     h = hour_of_day_histogram(res.logs)
     assert h.shape == (24,)
     assert h.sum() == pytest.approx(1.0)
+
+
+# ------------------------------------------------------------------- FitRec
+def test_fitrec_line_is_parsed_without_eval():
+    """The reference implementation uses eval(); a malicious line must not run."""
+    from adherence.datasets import _parse_fitrec_line
+
+    good = ("{'id': 1, 'userId': '42', 'sport': 'bike', 'timestamp': "
+            "[1408898746, 1408898756], 'latitude': [44.08], 'longitude': [-3.5]}")
+    uid, t, lon, sport = _parse_fitrec_line(good)
+    assert (uid, t, lon, sport) == ("42", 1408898746.0, -3.5, "bike")
+
+    # No userId/timestamp pattern -> falls through to literal_eval, which
+    # refuses to execute anything.
+    assert _parse_fitrec_line("__import__('os').system('echo pwned')") is None
+    assert _parse_fitrec_line("not a record at all") is None
+
+
+def test_fitrec_takes_the_workout_start_not_the_end():
+    from adherence.datasets import _parse_fitrec_line
+
+    line = "{'userId': '7', 'timestamp': [1000, 2000, 3000], 'longitude': [0.0]}"
+    assert _parse_fitrec_line(line)[1] == 1000.0
+
+
+def test_fitrec_roundtrip(tmp_path):
+    from adherence.datasets import load_fitrec, write_synthetic_fitrec
+
+    p = write_synthetic_fitrec(str(tmp_path / "endo.json"), n_users=40, days=200, seed=2)
+    res = load_fitrec(p, sample_pct=100.0, min_events=20, min_days=30, verbose=False)
+    assert 20 <= len(res.logs) <= 40
+    assert res.span_days > 150
+    assert np.median([len(v) for v in res.logs.values()]) > 20
+
+
+def test_fitrec_sport_filter(tmp_path):
+    from adherence.datasets import load_fitrec, write_synthetic_fitrec
+
+    p = write_synthetic_fitrec(str(tmp_path / "e2.json"), n_users=30, days=200, seed=3)
+    assert len(load_fitrec(p, sport="bike", sample_pct=100.0, min_events=20,
+                           min_days=30, verbose=False).logs) > 0
+    with pytest.raises(ValueError, match="no usable rows"):
+        load_fitrec(p, sport="kayak", sample_pct=100.0, verbose=False)
+
+
+def test_fitrec_localisation_recovers_local_hour(tmp_path):
+    """GPS longitude should put a person's workouts back at their local time.
+
+    The synthetic writer shifts each person's UTC stamps by their longitude
+    offset, so a correct loader lands them back on the simulated local hour;
+    without localisation the pooled profile is smeared across meridians.
+    """
+    from adherence.datasets import (
+        hour_of_day_histogram,
+        load_fitrec,
+        write_synthetic_fitrec,
+    )
+
+    p = write_synthetic_fitrec(str(tmp_path / "e3.json"), n_users=120, days=250, seed=4)
+    kw = dict(sample_pct=100.0, min_events=20, min_days=30, verbose=False)
+    local = hour_of_day_histogram(load_fitrec(p, localize=True, **kw).logs)
+    raw = hour_of_day_histogram(load_fitrec(p, localize=False, **kw).logs)
+
+    # The writer draws workouts between 05:30 and 21:00 local, so a correct
+    # localisation puts nearly all the mass in that band and empties the small
+    # hours. It does NOT raise the peak -- the simulated hours are near-uniform
+    # within the band, so concentration shows up as a sharper edge, not a taller
+    # mode.
+    assert local[5:21].sum() > 0.95
+    assert raw[5:21].sum() < local[5:21].sum() - 0.1
+    assert local[2:5].sum() < raw[2:5].sum() / 3.0

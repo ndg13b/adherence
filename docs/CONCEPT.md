@@ -141,6 +141,56 @@ way. That band is exactly where a habitual user separates from a merely willing
 one, and it is the entire reason to build something finer. Above 60 minutes all
 the indices agree, because by then the routine has visibly gone.
 
+## First contact with real data
+
+Run against the public Duolingo learning traces (13M rows, 115k users; 419 with
+at least 8 sessions over 5 days in a 5% sample), fixed 45-minute bandwidth:
+
+| index | mean | reliability | reliable SD | vs. log(sessions) |
+|---|---|---|---|---|
+| **timing_consistency** | 0.109 | 0.575 | 0.091 | **−0.12** |
+| srm_hit_rate | 0.284 | 0.322 | 0.118 | +0.05 |
+| interdaily_stability | 0.121 | 0.515 | 0.044 | +0.19 |
+| sleep_regularity_index | 91.9 | **0.985** | 3.585 | **−0.94** |
+| timing_entropy_bits | 2.743 | 0.798 | 0.465 | +0.65 |
+| resultant_length | 0.585 | 0.645 | 0.167 | −0.18 |
+
+Two findings, and the second is the more important one.
+
+**The established indices are contaminated by engagement frequency.** SRI posts
+the highest reliability in the table by a distance — and correlates −0.94 with
+log session count. It is reliably measuring *how often* people engage, not how
+regularly; its reliability is the reliability of a session counter. Hour entropy
+is partly the same (+0.65). The kernel score sits at −0.12: essentially
+independent of volume. On simulated data SRI's confound registered only −0.45,
+because the simulation held everyone's rate near-constant. Real session counts
+vary enormously (IQR 9–15, max 66), and only real data exposed it.
+
+**But this population does not have the phenomenon.** Calibrated against known
+jitter at the same sample size, a score of 0.109 corresponds to roughly *three
+hours* of scatter (uniform would be 0.009). Scanning the bandwidth, reliability
+rises monotonically — 0.474 at 15 min to 0.639 at 240 min — and then plateaus.
+
+That shape is diagnostic, and `diagnose_anchor_scale` now reads it. A population
+with habit-scale anchors peaks at a narrow width and **declines** thereafter,
+because a kernel wider than the anchors blurs real distinctions: a simulated
+25-minute-anchor cohort peaked at 60 min and fell from 0.893 to 0.848 by 360
+min. A population with only a broad part-of-day preference rises and plateaus,
+because there is no characteristic timescale to find. Matching curve shapes
+across bandwidths, the real cohort correlates **+0.99** with an anchorless
+population confined to a personal ~6-hour window, and **−0.45** with an anchored
+one.
+
+So Duolingo users engage "in the evening", not "at 19:15". The metric works —
+it discriminates reliably and cleanly — but the concept is *untested* here
+rather than supported or refuted, because nobody schedules a phone language app.
+Domains where the behaviour is actually scheduled (prescribed training with a
+participant-chosen slot, medication, exercise) are where the hypothesis can be
+tested at all.
+
+A useful by-product: the bandwidth curve is a cheap screening test for whether a
+candidate dataset contains routines *before* investing in a retention analysis.
+
 ## Where this could break on real data
 
 Stated plainly, because these are the things that would sink a study.

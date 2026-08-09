@@ -44,7 +44,7 @@ model.best_window(window_min=60)        # (07:21, 08:21, p=0.33) -- when to nudg
 ```bash
 pip install -e .           # numpy + scipy
 pip install -e ".[dev]"    # + pytest
-pytest                     # 136 tests
+pytest                     # 144 tests
 ```
 
 ## What it measures
@@ -220,6 +220,15 @@ the result. Timestamps are read as UTC, which costs nothing: consistency is
 invariant to a constant time shift, so only the clock labels on anchors are
 affected.
 
+**First result.** On the Duolingo traces (419 usable people, 12 days) the score
+came back reliable (0.575) and, uniquely among the indices tested, uncorrelated
+with engagement frequency (−0.12, versus −0.94 for the Sleep Regularity Index,
+which turns out to be measuring session count). But the bandwidth scan showed
+reliability rising monotonically to a plateau at 240 min — the signature of a
+population with no habit-scale anchor. These users engage "in the evening", not
+"at 19:15". The metric works; that population does not have the phenomenon.
+`docs/CONCEPT.md` has the full table and the curve-shape diagnostic.
+
 What it cannot do is say anything about dropout — two weeks is too short to see
 anyone quit. That needs a longer dataset; `adherence.datasets.load_event_csv`
 takes any `(user, timestamp)` CSV by column name.
@@ -280,8 +289,9 @@ src/adherence/
   tune.py        bandwidth and half-life selection
   simulate.py    synthetic people with known ground truth
   survival.py    minimal Cox PH for study planning
-  datasets.py    streaming loaders for public event logs (Duolingo, generic CSV)
-  validate.py    split-half reliability and between-person variance on real data
+  datasets.py    streaming loaders for public event logs (Duolingo, FitRec, CSV)
+  validate.py    split-half reliability, bandwidth scan, anchor-scale diagnosis
+  screen.py      one screening pass over a loaded cohort
   cli.py
 ```
 

@@ -35,34 +35,8 @@ from pathlib import Path
 # Run straight from a clone, with or without `pip install -e .`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from adherence import RoutineModel  # noqa: E402
-from adherence.datasets import hour_of_day_histogram, load_duolingo  # noqa: E402
-from adherence.validate import (  # noqa: E402
-    OPTIONAL_SCORERS,
-    SCORERS,
-    bandwidth_scan,
-    format_bandwidth_scan,
-    reliability_report,
-)
-
-
-def print_hour_profile(logs) -> None:
-    """Sanity check on the timestamps before trusting anything downstream."""
-    h = hour_of_day_histogram(logs)
-    peak = h.max()
-    print("\nPooled engagement by hour (UTC, all people):")
-    for i, v in enumerate(h):
-        bar = "#" * int(round(40 * v / peak)) if peak > 0 else ""
-        print(f"  {i:02d}:00 {v:6.3f} {bar}")
-    flatness = h.min() / h.max() if h.max() > 0 else float("nan")
-    print(f"  trough/peak ratio {flatness:.2f}", end="  ")
-    if flatness > 0.6:
-        print("-- flat: users span many timezones, or times were shifted per user.\n"
-              "     Harmless for the scores (they are shift-invariant) but clock\n"
-              "     labels on anchors are not interpretable.")
-    else:
-        print("-- a diurnal shape is present, so the timestamps carry real\n"
-              "     time-of-day information.")
+from adherence.datasets import load_duolingo  # noqa: E402
+from adherence.screen import screen, write_scores  # noqa: E402
 
 
 def main(argv=None) -> int:
@@ -127,57 +101,34 @@ def main(argv=None) -> int:
         min_events=args.min_events,
         min_days=args.min_days,
     )
-    print("\n" + res.summary())
-    print(f"  loaded in {time.time() - t0:.0f}s")
-
-    if res.span_days < 25:
-        print(f"\n  NOTE: the data spans {res.span_days:.0f} days. Long enough to ask "
-              "whether\n        people differ; far too short to observe dropout.")
-
-    if not res.logs:
-        print("\nNo person met the inclusion thresholds. Try --min-events 5 --min-days 3.")
+    out = screen(
+        res, bandwidth_min=args.bandwidth,
+        with_anchor_precision=args.with_anchor_precision,
+        do_bandwidth_scan=args.bandwidth_scan,
+        short_span_days=25.0,
+    )
+    if not out:
         return 1
-
-    print_hour_profile(res.logs)
-
-    scorers = dict(SCORERS)
-    if args.with_anchor_precision:
-        scorers.update(OPTIONAL_SCORERS)
-
-    model = RoutineModel(bandwidth_min=args.bandwidth, half_life_days=28.0)
-    print("\nScoring (fixed bandwidth "
-          f"{args.bandwidth:.0f} min, so people stay comparable)...")
-    report = reliability_report(res.logs, model, scorers)
-    print("\n" + str(report))
-
-    print("\n" + "=" * 72)
-    print(report.verdict())
-    print("=" * 72)
-
-    if args.bandwidth_scan:
-        print("\n\nBandwidth scan -- is the default resolution right for these people?")
-        print("(reusing the loaded data, so this is fast)\n")
-        rows = bandwidth_scan(res.logs)
-        print(format_bandwidth_scan(rows))
 
     if args.gap_sensitivity:
         print("\nSensitivity to the session-merge gap (a judgement call, so check it):")
         print(f"{'gap':>8s} {'people':>8s} {'mean':>8s} {'reliab.':>9s} {'true SD':>9s}")
+        from adherence.validate import SCORERS, reliability_report
         for gap in (0.0, 10.0, 30.0, 60.0, 120.0):
             r = load_duolingo(args.file, sample_pct=args.sample_pct, gap_minutes=gap,
                               min_events=args.min_events, min_days=args.min_days,
                               verbose=False)
             if not r.logs:
                 continue
-            rep = reliability_report(r.logs, model, {"timing_consistency":
-                                                     SCORERS["timing_consistency"]},
+            rep = reliability_report(r.logs, out["model"],
+                                     {"timing_consistency": SCORERS["timing_consistency"]},
                                      verbose=False)
             i = rep.get("timing_consistency")
             print(f"{gap:7.0f}m {len(r.logs):8d} {i.mean:8.3f} {i.reliability:9.3f} "
                   f"{i.reliable_sd:9.3f}")
 
     if args.out:
-        _write_scores(args.out, res.logs, model, scorers)
+        write_scores(args.out, res.logs, out["model"])
         print(f"\nPer-person scores written to {args.out}")
 
     print(f"\nTotal time {time.time() - t0:.0f}s")
@@ -200,22 +151,6 @@ def _suggest_files() -> None:
             print(f"  python examples/duolingo_check.py \"{p}\"   ({p.stat().st_size / 1e6:.0f} MB)")
     else:
         print("Pass the path to learning_traces.13m.csv.gz (or the .zip), or use --self-test.")
-
-
-def _write_scores(path, logs, model, scorers) -> None:
-    import csv
-
-    from adherence.validate import score_cohort
-
-    scores = score_cohort(logs, model, scorers)
-    names = list(scorers)
-    with open(path, "w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["user_id", "n_sessions", "span_days"] + names)
-        for i, (uid, log) in enumerate(logs.items()):
-            span = (log.t[-1] - log.t[0]) / 86400.0 if len(log) else 0.0
-            w.writerow([uid, len(log), f"{span:.2f}"]
-                       + [f"{scores[n][i]:.6f}" for n in names])
 
 
 if __name__ == "__main__":
