@@ -83,7 +83,9 @@ def screen(
     if do_bandwidth_scan:
         print("\n\nBandwidth scan -- is this resolution right for these people?")
         print("(reusing the loaded data, so this is fast)\n")
-        scan = bandwidth_scan(res.logs)
+        # Must inherit the caller's half-life: scanning bandwidth at a different
+        # memory from the headline report compares two different models.
+        scan = bandwidth_scan(res.logs, half_life_days=half_life_days)
         print(format_bandwidth_scan(scan))
 
     hl_scan = None

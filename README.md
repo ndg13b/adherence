@@ -44,7 +44,7 @@ model.best_window(window_min=60)        # (07:21, 08:21, p=0.33) -- when to nudg
 ```bash
 pip install -e .           # numpy + scipy
 pip install -e ".[dev]"    # + pytest
-pytest                     # 144 tests
+pytest                     # 149 tests
 ```
 
 ## What it measures
