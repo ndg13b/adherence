@@ -308,6 +308,65 @@ def diagnose_anchor_scale(rows: list[dict]) -> tuple[str, str]:
     )
 
 
+def half_life_scan(
+    logs: dict[str, EventLog],
+    half_lives=(14.0, 28.0, 56.0, 112.0, 365.0, 1095.0, 100_000.0),
+    bandwidth_min: float = 45.0,
+    scorer: str = "timing_consistency",
+) -> list[dict]:
+    """Reliability across recency half-lives.
+
+    The half-life decides how much of a person's history the score actually
+    uses. At 28 days a routine measured over three years is judged almost
+    entirely on its final two months, because a weight of 2^(-age/half-life)
+    puts a ratio of 2^39 between the newest event and one three years old. That
+    is the right default for a twelve-day dataset and badly wasteful for a
+    multi-year one.
+
+    Read this the same way as the bandwidth scan: on reliability, not the mean.
+    A long half-life is not automatically better -- if a population's routines
+    genuinely move, a short memory tracks them and a long one averages two
+    different routines into mush.
+    """
+    out = []
+    for hl in half_lives:
+        model = RoutineModel(bandwidth_min=bandwidth_min, half_life_days=float(hl))
+        rep = reliability_report(
+            logs, model, {scorer: SCORERS[scorer]}, primary=scorer, verbose=False
+        )
+        i = rep.get(scorer)
+        out.append({
+            "half_life_days": float(hl), "mean": i.mean, "sd": i.sd,
+            "half_correlation": i.half_correlation, "reliability": i.reliability,
+            "reliable_sd": i.reliable_sd,
+        })
+    return out
+
+
+def format_half_life_scan(rows: list[dict]) -> str:
+    best = max((r for r in rows if np.isfinite(r["reliability"])),
+               key=lambda r: r["reliability"], default=None)
+    lines = [f"{'half-life':>11s} {'mean':>7s} {'SD':>7s} {'reliab.':>9s} {'true SD':>9s}"]
+    for r in rows:
+        hl = r["half_life_days"]
+        label = "no decay" if hl >= 10_000 else f"{hl:.0f}d"
+        mark = "  <- most reliable" if best and r is best else ""
+        lines.append(f"{label:>11s} {r['mean']:7.3f} {r['sd']:7.3f} "
+                     f"{r['reliability']:9.3f} {r['reliable_sd']:9.3f}{mark}")
+    if best:
+        hl = best["half_life_days"]
+        lines += [
+            "",
+            "  A short optimum means these routines move, and only recent history\n"
+            "  predicts the present. A long one means they are stable and the\n"
+            "  default was discarding usable data."
+            if hl < 100 else
+            "  The long optimum says these routines are stable over years, so the\n"
+            "  28-day default was throwing away most of each person's history.",
+        ]
+    return "\n".join(lines)
+
+
 def format_bandwidth_scan(rows: list[dict]) -> str:
     best = max((r for r in rows if np.isfinite(r["reliability"])),
                key=lambda r: r["reliability"], default=None)

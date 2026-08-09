@@ -231,3 +231,37 @@ def test_short_history_is_flagged_not_guessed():
     r = consistency_report(log)
     assert r.warmup
     assert np.isnan(r.timing_bits)
+
+
+def test_score_is_invariant_to_the_scale_of_recency_weights():
+    """Only weight ratios may matter, never their absolute size.
+
+    Recency weights are 2^(-age/half-life), so an observation window ending
+    years after someone's last event drives every weight to ~1e-16. An absolute
+    floor in the leave-one-out denominator then clamped, and a genuinely tight
+    routine scored exactly 0.0000 instead of 0.7425. Real data hit this the
+    moment a dataset spanned years rather than weeks.
+    """
+    base = datetime(2012, 1, 5, tzinfo=timezone.utc).timestamp()
+    rng = np.random.default_rng(0)
+    t = np.array([base + d * 86400 + 8 * 3600 + rng.normal(0, 1800) for d in range(200)])
+    model = RoutineModel(bandwidth_min=45.0, half_life_days=28.0)
+
+    own = EventLog.from_records(t, t_start=t[0], t_end=t[-1])
+    stretched = EventLog.from_records(t, t_start=t[0], t_end=t[-1] + 4 * 365 * 86400)
+
+    score = timing_consistency(own, model)
+    assert score > 0.5, "a tight routine must score well in the first place"
+    assert timing_consistency(stretched, model) == pytest.approx(score, abs=1e-9)
+
+
+def test_score_is_invariant_to_a_constant_weight_multiplier():
+    """The same property stated directly on per-event weights."""
+    base = datetime(2020, 1, 6, tzinfo=timezone.utc).timestamp()
+    t = np.array([base + d * 86400 + 9 * 3600 for d in range(60)])
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=10_000)
+    plain = EventLog.from_records(t, t_start=t[0], t_end=t[-1])
+    tiny = EventLog.from_records(t, weights=np.full(t.size, 1e-18),
+                                 t_start=t[0], t_end=t[-1])
+    assert timing_consistency(tiny, model) == pytest.approx(
+        timing_consistency(plain, model), abs=1e-9)
