@@ -235,6 +235,56 @@ their last run with the still-active censored, and — critically — adjusts fo
 baseline frequency, since people who run often keep running and an unadjusted
 result would be trivial.
 
+## The retention test: a clean null
+
+Run on the FitRec running subset — 408 analysable people, 145 disengagements,
+median follow-up 702 days, 90-day run-in:
+
+| model | irregularity HR per SD | 95% CI | p |
+|---|---|---|---|
+| unadjusted | 0.952 | 0.824–1.101 | 0.51 |
+| adjusted for run-in frequency | 0.955 | 0.827–1.103 | 0.53 |
+
+**No effect, and the null is informative rather than merely non-significant.**
+The confidence interval excludes anything above HR 1.10 per SD. The design had
+99.6% power for HR 1.4 — the effect size `examples/cohort_power.py` was built
+around — and 95% for HR 1.3. Run-in reliability was high, so attenuation does
+not rescue it.
+
+The pipeline is not broken: on synthetic data with a hazard ratio built in, the
+identical code recovers HR 1.91 (p = 2e-19).
+
+**The tell is that frequency does not predict retention either** (HR 0.922,
+p = 0.33). Everyone expects people who run more often to keep running. When the
+obvious predictor also shows nothing, suspect the outcome before the hypothesis.
+
+Three reasons this dataset probably cannot answer the question:
+
+1. **The outcome is platform abandonment, not behaviour cessation.** "Stopped
+   logging on Endomondo" is not "stopped running", and the data ends in January
+   2016, exactly as Strava was displacing Endomondo. Migration between apps has
+   no reason to correlate with routine consistency, and it would dilute any real
+   effect toward exactly what we observe.
+2. **There is no true baseline.** A person's first workout in this file is not
+   their first workout ever — it is where the sampling window opens. Habit
+   formation happens at the start of a behaviour, and that period is invisible
+   here, so the "run-in" is a window into an ongoing history rather than an
+   enrolment period.
+3. **Severe selection.** Inclusion required 20+ runs over 120+ days, so the
+   cohort is people who had already persisted. Restriction of range on the
+   predictor and the outcome together.
+
+So the hypothesis is neither supported nor refuted. What *is* established, and
+worth separating, is that the **forecasting** claim holds — calibrated
+probabilities, beating rate-matched and histogram baselines — while the
+**retention** claim remains untested. The practical use (placing a nudge where
+someone is already likely to act) rests on the first; the research use rests on
+the second.
+
+Testing it properly needs a dataset with a real enrolment date and an outcome
+that is the behaviour rather than the platform. That points back to
+purpose-collected data, or to something like the Brighten trials.
+
 ## Where this could break on real data
 
 Stated plainly, because these are the things that would sink a study.

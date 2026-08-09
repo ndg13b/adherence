@@ -40,6 +40,7 @@ running.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -100,7 +101,64 @@ def build_cohort(logs, run_in_days: float, dataset_end: float,
     return rows, skipped
 
 
-def fit_and_report(rows, label: str, adjust: bool) -> None:
+def run_in_reliability(logs, run_in_days: float, min_run_in_events: int) -> float:
+    """Split-half reliability of the *run-in* score, not the full-history one.
+
+    This is the number that decides whether a null can be believed. The
+    predictor is measured from 90 days, not from years, so it is noisier than
+    the headline reliability, and measurement error in a covariate attenuates
+    its coefficient toward zero. A null obtained with an unreliable predictor
+    says nothing; one obtained with a reliable predictor is evidence.
+    """
+    from adherence.validate import split_alternate
+
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=365.0)
+    a_scores, b_scores = [], []
+    for log in logs.values():
+        cutoff = log.t[0] + run_in_days * SECONDS_PER_DAY
+        window = log.slice(t_to=cutoff)
+        if len(window) < max(min_run_in_events, 6):
+            continue
+        a, b = split_alternate(window)
+        sa = timing_consistency(a, model, now=cutoff)
+        sb = timing_consistency(b, model, now=cutoff)
+        if np.isfinite(sa) and np.isfinite(sb):
+            a_scores.append(sa)
+            b_scores.append(sb)
+    if len(a_scores) < 10:
+        return float("nan")
+    r = float(np.corrcoef(a_scores, b_scores)[0, 1])
+    return float(np.clip(2 * r / (1 + r), 0.0, 1.0)) if r > -1 else float("nan")
+
+
+def report_precision(se: float, reliability: float) -> None:
+    """Turn an estimate into a statement about what it rules out.
+
+    A bare "p = 0.53" is not a finding. What makes a null informative is the
+    pair of numbers underneath it: how large an effect the design could have
+    caught, and how reliably the predictor was measured. Without both, a null
+    is indistinguishable from having looked badly.
+    """
+    from scipy.stats import norm
+
+    print("\nPrecision -- what this estimate can and cannot rule out:")
+    for power, z in (("80%", 2.802), ("90%", 3.242)):
+        print(f"  minimum detectable effect at {power} power: "
+              f"HR {math.exp(z * se):.2f} per SD")
+    for hr in (1.2, 1.3, 1.4):
+        print(f"  power to have detected HR {hr}: "
+              f"{norm.cdf(math.log(hr) / se - 1.96):.0%}")
+    if np.isfinite(reliability) and reliability > 0:
+        print(f"\n  Run-in score reliability {reliability:.2f}. Measurement error "
+              f"attenuates\n  the coefficient by roughly that factor, so a true effect "
+              f"of HR h would\n  show here as about HR {math.exp(math.log(1.3) * reliability):.2f} "
+              "if h were 1.30.")
+        if reliability < 0.5:
+            print("  That is low enough that the null is weak evidence: a real effect\n"
+                  "  could be hidden by noise in the predictor. Lengthen the run-in.")
+
+
+def fit_and_report(rows, label: str, adjust: bool) -> float:
     s = np.array([r[0] for r in rows])
     rate = np.array([r[1] for r in rows])
     time_d = np.array([r[2] for r in rows])
@@ -122,6 +180,7 @@ def fit_and_report(rows, label: str, adjust: bool) -> None:
     lo, hi = fit.ci()[0]
     print(f"  irregularity HR {np.exp(fit.coef[0]):.3f} "
           f"(95% CI {np.exp(lo):.3f}-{np.exp(hi):.3f}) per SD")
+    return float(fit.se[0])
 
 
 def main(argv=None) -> int:
@@ -136,6 +195,9 @@ def main(argv=None) -> int:
                    help="silence beyond this counts as having stopped (default 180)")
     p.add_argument("--min-events", type=int, default=20)
     p.add_argument("--min-days", type=float, default=120.0)
+    p.add_argument("--sensitivity", action="store_true",
+                   help="repeat across run-in lengths and silence thresholds, to check "
+                        "the answer does not hinge on either")
     args = p.parse_args(argv)
 
     if not os.path.exists(args.file):
@@ -174,8 +236,33 @@ def main(argv=None) -> int:
 
     fit_and_report(rows, "UNADJUSTED -- consistency alone (frequency not held constant):",
                    adjust=False)
-    fit_and_report(rows, "ADJUSTED -- consistency with run-in frequency held constant:",
-                   adjust=True)
+    se = fit_and_report(rows, "ADJUSTED -- consistency with run-in frequency held constant:",
+                        adjust=True)
+
+    rel = run_in_reliability(res.logs, args.run_in, args.min_run_in_events)
+    report_precision(se, rel)
+
+    if args.sensitivity:
+        print("\n\nSensitivity -- does the answer depend on the design choices?")
+        print(f"{'run-in':>8s} {'quiet':>7s} {'n':>6s} {'events':>7s} "
+              f"{'log HR':>8s} {'p':>8s}")
+        for run_in in (60.0, 90.0, 180.0):
+            for quiet in (90.0, 180.0, 365.0):
+                r, _ = build_cohort(res.logs, run_in, dataset_end, quiet,
+                                    args.min_run_in_events)
+                ev = np.array([q[3] for q in r]) if r else np.zeros(0)
+                if len(r) < 50 or ev.sum() < 20:
+                    print(f"{run_in:7.0f}d {quiet:6.0f}d {len(r):6d} {ev.sum():7.0f}"
+                          "   (too few)")
+                    continue
+                sc = np.array([q[0] for q in r])
+                x = -(sc - sc.mean()) / sc.std()
+                rate = np.array([q[1] for q in r])
+                lr = (np.log(rate + 0.1) - np.log(rate + 0.1).mean()) / np.log(rate + 0.1).std()
+                f = cox_ph(np.column_stack([x, lr]),
+                           np.array([q[2] for q in r]), ev)
+                print(f"{run_in:7.0f}d {quiet:6.0f}d {len(r):6d} {ev.sum():7.0f} "
+                      f"{f.coef[0]:+8.3f} {f.p[0]:8.3f}")
 
     print(
         "\nRead the adjusted model. The unadjusted one is shown only so the\n"
