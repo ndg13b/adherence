@@ -24,6 +24,12 @@ that determines your sample size.
 
 import numpy as np
 
+import sys
+from pathlib import Path
+
+# Run straight from a clone, with or without `pip install -e .`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 from adherence import RoutineModel, timing_consistency
 from adherence.events import SECONDS_PER_DAY
 from adherence.simulate import simulate_linked_cohort

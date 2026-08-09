@@ -14,6 +14,12 @@ from datetime import datetime
 
 import numpy as np
 
+import sys
+from pathlib import Path
+
+# Run straight from a clone, with or without `pip install -e .`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 from adherence import timing_consistency
 from adherence.baselines import (
     interdaily_stability,
