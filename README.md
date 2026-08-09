@@ -44,7 +44,7 @@ model.best_window(window_min=60)        # (07:21, 08:21, p=0.33) -- when to nudg
 ```bash
 pip install -e .           # numpy + scipy
 pip install -e ".[dev]"    # + pytest
-pytest                     # 106 tests
+pytest                     # 136 tests
 ```
 
 ## What it measures
@@ -172,6 +172,56 @@ A minimal Cox proportional-hazards fit (Efron ties, validated against known
 hazard ratios in `tests/test_survival.py`) is included so the example runs
 without extra dependencies. For a real analysis, refit in `lifelines` or R.
 
+## Validating on real data
+
+Everything above is simulation. `examples/duolingo_check.py` runs the first real
+check against the public [Duolingo learning traces](https://github.com/duolingo/halflife-regression)
+(13M rows, no approval needed):
+
+```bash
+python examples/duolingo_check.py --self-test              # dry run, ~5 seconds
+python examples/duolingo_check.py learning_traces.13m.csv.gz
+```
+
+Accepts `.csv`, `.csv.gz` or `.zip`. Streaming the full file takes under a
+minute; scoring adds a minute or two.
+
+It answers one question: **do people genuinely differ in timing consistency, or
+is the apparent spread just noise?** That distinction is the whole ballgame, and
+"look, the scores differ" cannot settle it — with two weeks of history each score
+comes from a dozen events, and sampling noise spreads scores across a cohort of
+*identical* people. In the built-in negative control, where every simulated
+person has the same true consistency, the observed SD is still 0.13.
+
+So the script reports **split-half reliability**: score each person twice from
+interleaved halves of their own events and correlate. That gives the number that
+matters,
+
+```
+reliable SD = observed SD × √reliability
+```
+
+the between-person spread with measurement error removed. On the negative control
+reliability collapses to 0.00 and the verdict reads `NOT ESTABLISHED`; on a cohort
+that genuinely differs it reads `PROCEED`.
+
+Every classic index goes through the same procedure, so the comparison is like
+for like, and two extra columns keep the analysis honest: `vs freq` flags any
+index that is really measuring how *often* someone engages rather than how
+regularly, and a correlation column asks whether the kernel score adds anything
+over the indices that already exist.
+
+The loader collapses bursts into occasions — a lesson is many rows sharing a
+timestamp, and counting rows would report one Tuesday sitting as thirty
+engagements. Use `--gap-sensitivity` to confirm the merge threshold isn't driving
+the result. Timestamps are read as UTC, which costs nothing: consistency is
+invariant to a constant time shift, so only the clock labels on anchors are
+affected.
+
+What it cannot do is say anything about dropout — two weeks is too short to see
+anyone quit. That needs a longer dataset; `adherence.datasets.load_event_csv`
+takes any `(user, timestamp)` CSV by column name.
+
 ## Command line
 
 ```bash
@@ -228,6 +278,8 @@ src/adherence/
   tune.py        bandwidth and half-life selection
   simulate.py    synthetic people with known ground truth
   survival.py    minimal Cox PH for study planning
+  datasets.py    streaming loaders for public event logs (Duolingo, generic CSV)
+  validate.py    split-half reliability and between-person variance on real data
   cli.py
 ```
 
