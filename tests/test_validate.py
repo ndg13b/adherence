@@ -137,3 +137,34 @@ def test_bandwidth_scan_prefers_a_width_matched_to_the_population(tmp_path):
     means = [r["mean"] for r in rows]
     assert means == sorted(means)
     assert "most reliable" in format_bandwidth_scan(rows)
+
+
+def test_anchor_scale_diagnosis_reads_the_curve_shape():
+    """The shape, not the peak, separates a real routine from a time-of-day habit."""
+    from adherence.validate import diagnose_anchor_scale
+
+    # Peaks narrow then declines: habit-scale anchors present.
+    anchored = [{"bandwidth_min": b, "reliability": r, "mean": 0.0, "sd": 0.0,
+                 "half_correlation": 0.0, "reliable_sd": 0.0}
+                for b, r in [(15, 0.874), (30, 0.887), (60, 0.893), (120, 0.878),
+                             (240, 0.857), (360, 0.848)]]
+    assert diagnose_anchor_scale(anchored)[0] == "anchored"
+
+    # Rises monotonically and plateaus: only a broad part-of-day preference.
+    diffuse = [{"bandwidth_min": b, "reliability": r, "mean": 0.0, "sd": 0.0,
+                "half_correlation": 0.0, "reliable_sd": 0.0}
+               for b, r in [(15, 0.630), (30, 0.748), (60, 0.830), (120, 0.881),
+                            (240, 0.898), (360, 0.899)]]
+    assert diagnose_anchor_scale(diffuse)[0] == "diffuse"
+
+    # The real Duolingo curve.
+    real = [{"bandwidth_min": b, "reliability": r, "mean": 0.0, "sd": 0.0,
+             "half_correlation": 0.0, "reliable_sd": 0.0}
+            for b, r in [(15, 0.474), (30, 0.558), (45, 0.575), (60, 0.582),
+                         (90, 0.603), (120, 0.621), (180, 0.637), (240, 0.639),
+                         (360, 0.638)]]
+    key, text = diagnose_anchor_scale(real)
+    assert key == "diffuse"
+    assert "does not have the phenomenon" in text
+
+    assert diagnose_anchor_scale(real[:2])[0] == "unknown"
