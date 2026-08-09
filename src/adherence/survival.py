@@ -18,6 +18,7 @@ are typically recorded in whole days, so ties are the rule, not the exception.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -57,6 +58,111 @@ class CoxResult:
         if not self.converged:
             lines.append("  [did not converge]")
         return "\n".join(lines)
+
+
+def cox_ph_time_varying(
+    X: np.ndarray,
+    start: np.ndarray,
+    stop: np.ndarray,
+    event: np.ndarray,
+    names: list[str] | None = None,
+    max_iter: int = 50,
+    tol: float = 1e-8,
+) -> CoxResult:
+    """Cox model where a covariate changes during follow-up (Andersen-Gill form).
+
+    The one-row-per-person model asks whether people who *were* regular at
+    baseline last longer. This asks a different and, for a routine, more natural
+    question: whether someone is at higher risk *while* their regularity is low,
+    allowing that the same person may be regular one month and not the next.
+
+    Each person contributes several rows, one per interval of their follow-up:
+    ``(start, stop]`` with the covariates as they stood at the start of that
+    interval, and ``event=1`` only on the interval where they disengaged. A
+    person is in the risk set at time ``t`` for whichever of their intervals
+    contains it, so their covariate value can differ from one event time to the
+    next.
+
+    The covariates must be knowable at ``start``. Anything computed from data
+    inside the interval leaks the future into the predictor and will manufacture
+    an effect out of nothing.
+    """
+    from scipy.stats import norm
+
+    X = np.atleast_2d(np.asarray(X, dtype=float))
+    if X.shape[0] != len(start):
+        X = X.T
+    start = np.asarray(start, dtype=float)
+    stop = np.asarray(stop, dtype=float)
+    event = np.asarray(event, dtype=float)
+    n, p = X.shape
+
+    event_times = np.unique(stop[event > 0])
+    beta = np.zeros(p)
+    info = np.eye(p)
+    ll = 0.0
+    converged = False
+
+    for _ in range(max_iter):
+        eta = np.clip(X @ beta, -500, 500)
+        w = np.exp(eta)
+
+        ll = 0.0
+        grad = np.zeros(p)
+        info = np.zeros((p, p))
+
+        for t in event_times:
+            # Everyone whose interval spans t is at risk; those whose interval
+            # *ends* at t with an event are the ones failing.
+            at_risk = (start < t) & (stop >= t)
+            dying = at_risk & (event > 0) & (stop == t)
+            d = int(dying.sum())
+            if d == 0 or not at_risk.any():
+                continue
+
+            wr, Xr = w[at_risk], X[at_risk]
+            s0 = float(wr.sum())
+            s1 = wr @ Xr
+            s2 = np.einsum("i,ij,ik->jk", wr, Xr, Xr)
+
+            wd, Xd = w[dying], X[dying]
+            d0 = float(wd.sum())
+            d1 = wd @ Xd
+            d2 = np.einsum("i,ij,ik->jk", wd, Xd, Xd)
+
+            ll += float((Xd @ beta).sum())
+            grad += Xd.sum(axis=0)
+            for k in range(d):  # Efron's correction for tied event times
+                c = k / d
+                a0 = s0 - c * d0
+                if a0 <= 0:
+                    continue
+                a1 = s1 - c * d1
+                a2 = s2 - c * d2
+                ll -= math.log(a0)
+                m = a1 / a0
+                grad -= m
+                info += a2 / a0 - np.outer(m, m)
+
+        try:
+            step = np.linalg.solve(info, grad)
+        except np.linalg.LinAlgError:
+            break
+        beta = beta + step
+        if np.max(np.abs(step)) < tol:
+            converged = True
+            break
+
+    try:
+        se = np.sqrt(np.clip(np.diag(np.linalg.inv(info)), 0, None))
+    except np.linalg.LinAlgError:
+        se = np.full(p, np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = beta / se
+    return CoxResult(
+        coef=beta, se=se, z=z, p=2 * norm.sf(np.abs(z)), loglik=float(ll),
+        n=n, n_events=int(event.sum()), converged=converged, names=names,
+    )
 
 
 def cox_ph(
