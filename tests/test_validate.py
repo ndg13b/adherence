@@ -122,3 +122,18 @@ def test_reliability_is_bounded(tmp_path):
     rep = reliability_report(_cohort(tmp_path, False, n_users=80), MODEL, verbose=False)
     for i in rep.indices:
         assert np.isnan(i.reliability) or 0.0 <= i.reliability <= 1.0
+
+
+def test_bandwidth_scan_prefers_a_width_matched_to_the_population(tmp_path):
+    """A loose-routine population must not be scored best by a narrow kernel."""
+    from adherence.validate import bandwidth_scan, format_bandwidth_scan
+
+    logs = _cohort(tmp_path, identical=False, n_users=120, seed=7)
+    rows = bandwidth_scan(logs, bandwidths=(15.0, 45.0, 120.0))
+    assert len(rows) == 3
+    assert all(np.isfinite(r["reliability"]) for r in rows)
+    # A wider kernel always raises the mean; that is why reliability, not the
+    # mean, is what the scan is read on.
+    means = [r["mean"] for r in rows]
+    assert means == sorted(means)
+    assert "most reliable" in format_bandwidth_scan(rows)

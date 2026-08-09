@@ -214,6 +214,64 @@ class CohortReport:
         return "\n".join(lines)
 
 
+def bandwidth_scan(
+    logs: dict[str, EventLog],
+    bandwidths=(15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 180.0, 240.0, 360.0),
+    half_life_days: float = 28.0,
+    scorer: str = "timing_consistency",
+) -> list[dict]:
+    """Reliability and spread of the score across kernel widths.
+
+    The bandwidth is a claim about the population's timing tolerance, and the
+    wrong claim costs discrimination in a way that is invisible from a single
+    run. Too narrow and almost no two sessions reinforce each other, so everyone
+    is crushed toward zero and the differences between them vanish into the
+    floor; too wide and everyone is smeared toward one.
+
+    Pick the bandwidth that maximises **reliability**, not the one that
+    maximises the mean -- a wider kernel always raises the mean, which says
+    nothing. Then report the choice, and keep it fixed across the cohort so the
+    scores stay comparable.
+    """
+    out = []
+    for bw in bandwidths:
+        model = RoutineModel(bandwidth_min=float(bw), half_life_days=half_life_days)
+        rep = reliability_report(
+            logs, model, {scorer: SCORERS[scorer]}, primary=scorer, verbose=False
+        )
+        i = rep.get(scorer)
+        out.append({
+            "bandwidth_min": float(bw), "mean": i.mean, "sd": i.sd,
+            "half_correlation": i.half_correlation, "reliability": i.reliability,
+            "reliable_sd": i.reliable_sd,
+        })
+    return out
+
+
+def format_bandwidth_scan(rows: list[dict]) -> str:
+    best = max((r for r in rows if np.isfinite(r["reliability"])),
+               key=lambda r: r["reliability"], default=None)
+    lines = [
+        f"{'bandwidth':>10s} {'mean':>7s} {'SD':>7s} {'half r':>8s} {'reliab.':>9s} "
+        f"{'true SD':>9s}"
+    ]
+    for r in rows:
+        mark = "  <- most reliable" if best and r is best else ""
+        lines.append(
+            f"{r['bandwidth_min']:8.0f}m {r['mean']:7.3f} {r['sd']:7.3f} "
+            f"{r['half_correlation']:8.3f} {r['reliability']:9.3f} "
+            f"{r['reliable_sd']:9.3f}{mark}"
+        )
+    if best:
+        lines += [
+            "",
+            f"  Most reliable at {best['bandwidth_min']:.0f} min -- read that as this "
+            "population's timing tolerance.",
+            "  A rising mean alone is not evidence: any wider kernel raises the mean.",
+        ]
+    return "\n".join(lines)
+
+
 def reliability_report(
     logs: dict[str, EventLog],
     model: RoutineModel | None = None,
