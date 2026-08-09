@@ -44,7 +44,7 @@ model.best_window(window_min=60)        # (07:21, 08:21, p=0.33) -- when to nudg
 ```bash
 pip install -e .           # numpy + scipy
 pip install -e ".[dev]"    # + pytest
-pytest                     # 149 tests
+pytest                     # 156 tests
 ```
 
 ## What it measures
@@ -273,8 +273,11 @@ targeting support and not for judging people. Nothing here is causal. And
 everything above is simulation: the package has not been validated on a real
 dataset.
 
-`docs/CONCEPT.md` has the prior art, what is and is not novel, and the failure
-modes in more detail.
+**New to this kind of model?** `docs/HOW-IT-WORKS.md` explains the mechanics in
+plain terms — what is predicted, how the score moves over time, what every
+parameter means, and how the out-of-sample checks work. `docs/CONCEPT.md` has the
+prior art, what is and is not novel, the real-data results, and the failure
+modes.
 
 ## Layout
 

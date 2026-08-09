@@ -101,6 +101,69 @@ def build_cohort(logs, run_in_days: float, dataset_end: float,
     return rows, skipped
 
 
+def compare_groups(rows, quiet: bool = False) -> dict:
+    """The plain comparison: people who stopped against people who stayed.
+
+    The Cox model already contains this and more -- it uses *when* each person
+    stopped, and it handles the fact that someone observed for 100 days had less
+    opportunity to be seen quitting than someone observed for 1000. But a hazard
+    ratio is hard to eyeball, and if the two groups' score distributions sit on
+    top of each other, that is worth seeing directly.
+
+    Read the follow-up row before the score rows. Unequal follow-up between the
+    groups is the reason this comparison cannot stand on its own: it biases the
+    raw contrast in whichever direction the imbalance runs, and correcting for
+    it is precisely what the survival model is for.
+    """
+    s = np.array([r[0] for r in rows])
+    rate = np.array([r[1] for r in rows])
+    dur = np.array([r[2] for r in rows])
+    stopped = np.array([r[3] for r in rows]) > 0.5
+
+    a, b = s[stopped], s[~stopped]
+    sd = math.sqrt(0.5 * (a.var(ddof=1) + b.var(ddof=1))) if min(a.size, b.size) > 1 else np.nan
+    d = (b.mean() - a.mean()) / sd if sd else np.nan
+
+    quintiles = []
+    edges = np.quantile(s, np.linspace(0, 1, 6))
+    for i in range(5):
+        lo, hi = edges[i], edges[i + 1]
+        m = (s >= lo) & (s <= hi if i == 4 else s < hi)
+        if m.any():
+            quintiles.append({"lo": float(lo), "hi": float(hi), "n": int(m.sum()),
+                              "stopped": float(stopped[m].mean())})
+    stats = {"cohens_d": float(d), "n_stopped": int(a.size), "n_active": int(b.size),
+             "quintiles": quintiles}
+    if quiet:
+        return stats
+
+    print("\nStopped vs still active, compared directly:")
+    print(f"{'':22s} {'stopped':>12s} {'still active':>13s}")
+    print(f"  {'people':20s} {a.size:12d} {b.size:13d}")
+    print(f"  {'consistency mean':20s} {a.mean():12.3f} {b.mean():13.3f}")
+    print(f"  {'consistency SD':20s} {a.std(ddof=1):12.3f} {b.std(ddof=1):13.3f}")
+    print(f"  {'runs/week mean':20s} {rate[stopped].mean():12.2f} "
+          f"{rate[~stopped].mean():13.2f}")
+    print(f"  {'median follow-up':20s} {np.median(dur[stopped]):11.0f}d "
+          f"{np.median(dur[~stopped]):12.0f}d")
+    print(f"\n  Cohen's d on consistency (positive = stayers more consistent): {d:+.3f}")
+    if abs(d) < 0.2:
+        print("  Negligible by any convention. The two distributions overlap almost"
+              "\n  entirely -- there is no raw difference for a model to find.")
+
+    # A linear hazard term would miss a U-shape or a tail-only effect, so look at
+    # the dropout rate across the range rather than only at its slope.
+    print("\nDropout rate by consistency quintile (lowest to highest):")
+    for i, q in enumerate(quintiles):
+        m = (s >= q["lo"]) & (s <= q["hi"] if i == len(quintiles) - 1 else s < q["hi"])
+        print(f"  Q{i + 1}  consistency {q['lo']:.3f}-{q['hi']:.3f}  n={q['n']:3d}  "
+              f"stopped {q['stopped']:4.0%}  "
+              f"median follow-up {np.median(dur[m]):4.0f}d")
+    print("  A monotone trend down this column would be the effect we are looking\n"
+          "  for; a U-shape would be missed by the linear hazard term above.")
+    return stats
+
+
 def run_in_reliability(logs, run_in_days: float, min_run_in_events: int) -> float:
     """Split-half reliability of the *run-in* score, not the full-history one.
 
@@ -233,6 +296,8 @@ def main(argv=None) -> int:
               "fit. Either almost everyone is still active at the end of the data, or\n"
               "--quiet-days is too long. Try a shorter --quiet-days.")
         return 1
+
+    compare_groups(rows)
 
     fit_and_report(rows, "UNADJUSTED -- consistency alone (frequency not held constant):",
                    adjust=False)

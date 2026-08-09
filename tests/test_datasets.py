@@ -360,3 +360,43 @@ def test_retention_pipeline_recovers_a_known_hazard_ratio(tmp_path):
     assert fit.converged
     assert fit.coef[0] > 0, "irregular people were simulated to quit sooner"
     assert fit.p[0] < 0.05
+
+
+def test_group_comparison_separates_effect_from_no_effect(tmp_path):
+    """The plain stopped-vs-stayed contrast must track the built-in truth.
+
+    A survival model can be right while being impossible to eyeball, so the
+    descriptive comparison has to be trustworthy on its own terms: flat when
+    nothing was built in, graded when something was.
+    """
+    import importlib.util
+    import pathlib
+
+    from adherence.datasets import load_fitrec, write_synthetic_fitrec
+
+    spec = importlib.util.spec_from_file_location(
+        "ret", str(pathlib.Path(__file__).parent.parent / "examples"
+                   / "fitrec_retention.py"))
+    ret = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ret)
+
+    out = {}
+    for lhr in (0.0, 1.0):
+        p = write_synthetic_fitrec(str(tmp_path / f"g{lhr}.json"), n_users=350,
+                                   days=700, dropout_hazard=0.004,
+                                   log_hazard_ratio=lhr, seed=3)
+        res = load_fitrec(p, sample_pct=100.0, min_events=20, min_days=120,
+                          verbose=False)
+        end = max(v.t[-1] for v in res.logs.values())
+        rows, _ = ret.build_cohort(res.logs, 90.0, end, 120.0, 8)
+        out[lhr] = ret.compare_groups(rows, quiet=True)
+
+    assert abs(out[0.0]["cohens_d"]) < 0.3, "no link -> groups should overlap"
+    assert out[1.0]["cohens_d"] > 0.8, "strong link -> stayers clearly more consistent"
+
+    # And the dropout gradient across quintiles should appear only with a link.
+    def spread(stats):
+        v = [q["stopped"] for q in stats["quintiles"]]
+        return max(v) - min(v)
+
+    assert spread(out[1.0]) > spread(out[0.0]) + 0.2
