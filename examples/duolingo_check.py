@@ -40,6 +40,8 @@ from adherence.datasets import hour_of_day_histogram, load_duolingo  # noqa: E40
 from adherence.validate import (  # noqa: E402
     OPTIONAL_SCORERS,
     SCORERS,
+    bandwidth_scan,
+    format_bandwidth_scan,
     reliability_report,
 )
 
@@ -86,6 +88,9 @@ def main(argv=None) -> int:
                         "scores stay comparable (default 45)")
     p.add_argument("--with-anchor-precision", action="store_true",
                    help="also score anchor precision (slower: permutation null)")
+    p.add_argument("--bandwidth-scan", action="store_true",
+                   help="score at a range of kernel widths to find this population's "
+                        "timing tolerance. Cheap: reuses the single pass over the file")
     p.add_argument("--gap-sensitivity", action="store_true",
                    help="repeat at several session-merge gaps to check the choice "
                         "does not drive the answer")
@@ -148,6 +153,12 @@ def main(argv=None) -> int:
     print("\n" + "=" * 72)
     print(report.verdict())
     print("=" * 72)
+
+    if args.bandwidth_scan:
+        print("\n\nBandwidth scan -- is the default resolution right for these people?")
+        print("(reusing the loaded data, so this is fast)\n")
+        rows = bandwidth_scan(res.logs)
+        print(format_bandwidth_scan(rows))
 
     if args.gap_sensitivity:
         print("\nSensitivity to the session-merge gap (a judgement call, so check it):")
