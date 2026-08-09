@@ -72,9 +72,18 @@ def cessation_time(log, dataset_end: float, quiet_days: float):
 
 def build_intervals(logs, dataset_end: float, warmup_days: float,
                     interval_days: float, lag_days: float, quiet_days: float,
-                    min_events: int):
-    """One row per person per interval, covariates knowable at the interval start."""
-    model = RoutineModel(bandwidth_min=30.0, half_life_days=365.0)
+                    min_events: int, half_life_days: float = 28.0):
+    """One row per person per interval, covariates knowable at the interval start.
+
+    ``half_life_days`` is the critical setting here, and it is NOT the one that
+    maximises reliability. Reliability rewards a long memory, because that makes
+    the score a stable description of the person -- but a stable score cannot
+    register a routine coming apart, which is the whole point of this analysis.
+    A total 30-day collapse moves the score by -0.79 with a 7-day memory and by
+    only -0.11 with a 365-day one. Measuring change needs a short memory;
+    measuring a trait needs a long one, and the two cannot be served at once.
+    """
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=half_life_days)
     rows = []
 
     for log in logs.values():
@@ -157,6 +166,12 @@ def main(argv=None) -> int:
     p.add_argument("--lag", type=float, default=30.0,
                    help="days between measuring the score and the interval it "
                         "predicts (default 30). The model is also fitted at lag 0")
+    p.add_argument("--half-life", type=float, default=28.0,
+                   help="recency memory in days (default 28). Short on purpose: a "
+                        "long memory cannot register a routine coming apart")
+    p.add_argument("--half-life-sweep", action="store_true",
+                   help="refit across memory lengths, since this choice decides "
+                        "whether the analysis can see decay at all")
     p.add_argument("--quiet-days", type=float, default=180.0)
     p.add_argument("--min-events", type=int, default=10)
     p.add_argument("--min-days", type=float, default=120.0)
@@ -173,9 +188,34 @@ def main(argv=None) -> int:
     print("\n" + res.summary())
     dataset_end = max(v.t[-1] for v in res.logs.values())
 
+    if args.half_life_sweep:
+        print("\n\nMemory sweep -- can the score even see decay at this setting?")
+        print(f"(lag {args.lag:.0f}d, irregularity adjusted for run rate)\n")
+        print(f"{'half-life':>10s} {'intervals':>10s} {'events':>7s} "
+              f"{'log HR':>8s} {'se':>7s} {'p':>8s}")
+        for hl in (7.0, 14.0, 28.0, 90.0, 365.0):
+            r = build_intervals(res.logs, dataset_end, args.warmup, args.interval,
+                                args.lag, args.quiet_days, args.min_events, hl)
+            ne = sum(q["event"] for q in r)
+            if not r or ne < 20:
+                print(f"{hl:9.0f}d {len(r):10d} {ne:7.0f}   (too few)")
+                continue
+            zz = lambda v: (v - v.mean()) / v.std() if v.std() > 0 else v * 0.0  # noqa: E731
+            sc = np.array([q["score"] for q in r])
+            rt = np.log(np.array([q["rate"] for q in r]) + 0.1)
+            f = cox_ph_time_varying(
+                np.column_stack([-zz(sc), zz(rt)]),
+                np.array([q["start"] for q in r]), np.array([q["stop"] for q in r]),
+                np.array([q["event"] for q in r]))
+            print(f"{hl:9.0f}d {len(r):10d} {ne:7.0f} {f.coef[0]:+8.3f} "
+                  f"{f.se[0]:7.3f} {f.p[0]:8.3f}")
+        print("\n  A short memory tracks recent change; a long one describes a stable\n"
+              "  trait. If nothing appears at ANY setting, the null is not an artefact\n"
+              "  of this choice.")
+
     for lag in (0.0, args.lag):
         rows = build_intervals(res.logs, dataset_end, args.warmup, args.interval,
-                               lag, args.quiet_days, args.min_events)
+                               lag, args.quiet_days, args.min_events, args.half_life)
         if not rows:
             print(f"\nNo usable intervals at lag {lag:.0f}d.")
             continue
