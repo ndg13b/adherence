@@ -62,6 +62,15 @@ def main(argv=None) -> int:
     p.add_argument("--bandwidth", type=float, default=45.0)
     p.add_argument("--no-localize", action="store_true",
                    help="skip the longitude-based local-time estimate")
+    p.add_argument("--peek", action="store_true",
+                   help="dump raw records and field statistics, then stop. Run this "
+                        "first when a result looks impossible")
+    p.add_argument("--min-year", type=int, default=2005,
+                   help="drop workouts dated before this (default 2005)")
+    p.add_argument("--max-year", type=int, default=2020,
+                   help="drop workouts dated after this (default 2020)")
+    p.add_argument("--window", choices=["person", "global"], default="person",
+                   help="observation window per person (default person)")
     p.add_argument("--bandwidth-scan", action="store_true")
     p.add_argument("--with-anchor-precision", action="store_true")
     p.add_argument("--out", default=None, help="write per-person scores to this CSV")
@@ -86,6 +95,12 @@ def main(argv=None) -> int:
         print("Download from the FitRec project page (see the module docstring).")
         return 2
 
+    if args.peek:
+        from adherence.datasets import peek_fitrec
+
+        peek_fitrec(args.file)
+        return 0
+
     t0 = time.time()
     print(f"Loading {args.file}")
     print("  (streaming; one workout per line)")
@@ -93,6 +108,7 @@ def main(argv=None) -> int:
         args.file, sport=args.sport, sample_pct=args.sample_pct,
         gap_minutes=args.gap_minutes, min_events=args.min_events,
         min_days=args.min_days, localize=not args.no_localize,
+        window=args.window, min_year=args.min_year, max_year=args.max_year,
     )
     print(f"  loaded in {time.time() - t0:.0f}s")
 

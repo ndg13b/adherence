@@ -5,3 +5,19 @@ build/
 dist/
 .pytest_cache/
 .venv/
+
+# Research datasets. Never commit these: several carry redistribution
+# restrictions (FitRec is academic-use-only), they are far too large for git,
+# and this repository is public.
+*.csv
+*.csv.gz
+*.tsv
+*.json
+*.json.gz
+*.jsonl
+*.gz
+*.zip
+*.npy
+*.parquet
+data/
+!tests/**/*.json
