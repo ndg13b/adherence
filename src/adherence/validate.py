@@ -277,10 +277,15 @@ def diagnose_anchor_scale(rows: list[dict]) -> tuple[str, str]:
     widest = max(ok, key=lambda r: r["bandwidth_min"])
     decline = (peak["reliability"] - widest["reliability"]) / max(peak["reliability"], 1e-9)
 
-    if peak["bandwidth_min"] <= 60.0 and decline > 0.03:
+    # Peak *location* is the robust signal, not the size of the decline. When a
+    # cohort has long histories, reliability saturates near 1 at every width and
+    # the fall-off from the peak shrinks to a couple of percent while still
+    # pointing the same way -- a magnitude threshold would misfile exactly the
+    # well-measured anchored populations this is meant to identify.
+    if peak["bandwidth_min"] <= 90.0 and decline > 0.005:
         return "anchored", (
             f"ANCHORED. Reliability peaks at {peak['bandwidth_min']:.0f} min and falls "
-            f"{decline:.0%} by the widest kernel.\n"
+            f"{decline:.1%} by the widest kernel.\n"
             "  These people have routines at habit scale -- the timescale the concept is\n"
             "  about. A wider kernel blurs real distinctions, which is why it costs\n"
             "  reliability."

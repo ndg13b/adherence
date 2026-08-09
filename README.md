@@ -44,7 +44,7 @@ model.best_window(window_min=60)        # (07:21, 08:21, p=0.33) -- when to nudg
 ```bash
 pip install -e .           # numpy + scipy
 pip install -e ".[dev]"    # + pytest
-pytest                     # 138 tests
+pytest                     # 144 tests
 ```
 
 ## What it measures
@@ -289,8 +289,9 @@ src/adherence/
   tune.py        bandwidth and half-life selection
   simulate.py    synthetic people with known ground truth
   survival.py    minimal Cox PH for study planning
-  datasets.py    streaming loaders for public event logs (Duolingo, generic CSV)
-  validate.py    split-half reliability and between-person variance on real data
+  datasets.py    streaming loaders for public event logs (Duolingo, FitRec, CSV)
+  validate.py    split-half reliability, bandwidth scan, anchor-scale diagnosis
+  screen.py      one screening pass over a loaded cohort
   cli.py
 ```
 

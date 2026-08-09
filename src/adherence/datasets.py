@@ -14,9 +14,11 @@ well as a hundred thousand do, in a fraction of the memory.
 
 from __future__ import annotations
 
+import ast
 import csv
 import gzip
 import io
+import re
 import zipfile
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
@@ -170,7 +172,12 @@ def load_event_csv(
             except (ValueError, TypeError):
                 continue
 
-    tzinfo = ZoneInfo(tz)
+    return _finalize(per_user, ZoneInfo(tz), gap_minutes, min_events, min_days,
+                     n_rows, len(seen))
+
+
+def _finalize(per_user, tzinfo, gap_minutes, min_events, min_days, n_rows, n_seen):
+    """Merge bursts, apply inclusion rules, and build one EventLog per person."""
     merged = {u: merge_sessions(np.array(v, dtype=float), gap_minutes)
               for u, v in per_user.items()}
     all_t = [t for v in merged.values() for t in (v[0], v[-1]) if v.size]
@@ -192,13 +199,116 @@ def load_event_csv(
     return CohortLoadResult(
         logs=logs,
         n_rows=n_rows,
-        n_users_seen=len(seen),
+        n_users_seen=n_seen,
         n_users_sampled=len(per_user),
         span_days=(t_end - t_start) / SECONDS_PER_DAY,
         t_start=t_start,
         t_end=t_end,
         gap_minutes=gap_minutes,
     )
+
+
+# --------------------------------------------------------------------- FitRec
+# Each line is a Python dict literal (note: NOT valid JSON -- single quotes), one
+# per workout, holding whole sensor sequences. We need four scalars from each, so
+# the fields are picked out by pattern rather than by parsing megabytes of
+# heart-rate and GPS arrays we would immediately discard.
+_FITREC_USER = re.compile(r"'userId':\s*'?(\w+)'?")
+_FITREC_TIME = re.compile(r"'timestamp':\s*\[\s*(-?[\d.eE+]+)")
+_FITREC_LAT = re.compile(r"'latitude':\s*\[\s*(-?[\d.eE+]+)")
+_FITREC_LON = re.compile(r"'longitude':\s*\[\s*(-?[\d.eE+]+)")
+_FITREC_SPORT = re.compile(r"'sport':\s*'([^']*)'")
+
+
+def _parse_fitrec_line(line: str):
+    """Return ``(user, start_time, longitude, sport)`` or None."""
+    mu, mt = _FITREC_USER.search(line), _FITREC_TIME.search(line)
+    if mu and mt:
+        lon = _FITREC_LON.search(line)
+        sport = _FITREC_SPORT.search(line)
+        return (mu.group(1), float(mt.group(1)),
+                float(lon.group(1)) if lon else None,
+                sport.group(1) if sport else None)
+    # Fall back to a real parse for any line the patterns miss. literal_eval,
+    # never eval: these files come off the internet and the reference code's
+    # eval() would execute whatever a line contained.
+    try:
+        rec = ast.literal_eval(line)
+        ts = rec.get("timestamp")
+        if not ts:
+            return None
+        lons = rec.get("longitude") or [None]
+        return (str(rec["userId"]), float(ts[0]), lons[0], rec.get("sport"))
+    except (ValueError, SyntaxError, KeyError, TypeError, MemoryError):
+        return None
+
+
+def load_fitrec(
+    path: str,
+    sport: str | None = None,
+    sample_pct: float = 100.0,
+    gap_minutes: float = 30.0,
+    min_events: int = 20,
+    min_days: float = 30.0,
+    localize: bool = True,
+    max_users: int | None = None,
+    progress_every: int = 50_000,
+    verbose: bool = True,
+) -> CohortLoadResult:
+    """Endomondo workout logs from the FitRec release (Ni, Muhlstein & McAuley).
+
+    One workout per line; the event time is ``timestamp[0]``, the moment the
+    workout *started*, which is the decision a time-of-day cue acts on.
+
+    ``localize`` shifts each person's times by a whole-hour offset estimated from
+    their median longitude. Their local clock is what a routine follows, and the
+    dataset records none -- but it records GPS, so roughly where they are is
+    recoverable. The offset is fixed per person and applied to every event, so
+    it cannot affect the consistency scores (which are invariant to a constant
+    shift); what it buys is anchor clock times that mean something, and a pooled
+    hour-of-day profile that is interpretable rather than smeared across the
+    world's timezones. It does not model daylight saving, so expect up to an
+    hour of slippage across a transition.
+
+    ``sport`` filters to one activity. Worth considering: someone who runs at
+    07:00 and cycles at weekends has two routines, and pooling them looks like
+    one incoherent routine.
+    """
+    per_user: dict[str, list[float]] = {}
+    lons: dict[str, list[float]] = {}
+    n_rows = 0
+    seen: set[str] = set()
+
+    with open_text(path) as fh:
+        for line in fh:
+            n_rows += 1
+            if verbose and progress_every and n_rows % progress_every == 0:
+                print(f"    ...{n_rows:,} workouts, {len(per_user):,} people kept",
+                      flush=True)
+            parsed = _parse_fitrec_line(line)
+            if parsed is None:
+                continue
+            uid, t, lon, sp = parsed
+            if sport is not None and sp != sport:
+                continue
+            seen.add(uid)
+            if not in_sample(uid, sample_pct):
+                continue
+            if max_users is not None and uid not in per_user and len(per_user) >= max_users:
+                continue
+            per_user.setdefault(uid, []).append(t)
+            if lon is not None:
+                lons.setdefault(uid, []).append(lon)
+
+    if localize:
+        for uid, ts in per_user.items():
+            if lons.get(uid):
+                # 15 degrees of longitude per hour, rounded to a whole hour.
+                offset = round(float(np.median(lons[uid])) / 15.0) * 3600.0
+                per_user[uid] = [t + offset for t in ts]
+
+    return _finalize(per_user, ZoneInfo("UTC"), gap_minutes, min_events, min_days,
+                     n_rows, len(seen))
 
 
 def load_duolingo(path: str, **kw) -> CohortLoadResult:
@@ -311,3 +421,61 @@ def hour_of_day_histogram(logs: dict[str, EventLog], bins: int = 24) -> np.ndarr
         idx = (log.daily_phase / (2 * np.pi) * bins).astype(int) % bins
         np.add.at(counts, idx, 1.0)
     return counts / max(counts.sum(), 1.0)
+
+
+def write_synthetic_fitrec(
+    path: str,
+    n_users: int = 200,
+    days: int = 365,
+    workouts_per_week: float = 3.0,
+    identical_people: bool = False,
+    seed: int = 0,
+) -> str:
+    """Write a small file imitating the FitRec release, for dry runs and tests.
+
+    Same one-dict-per-line layout, same single-quoted Python literals, same
+    sensor sequences padded around the fields that matter. Exercise is simulated
+    with tight anchors on a few fixed weekdays, which is the pattern the real
+    data would need to show for the concept to be testable there.
+    """
+    from datetime import datetime, timezone
+
+    from .simulate import PersonProfile, Slot, simulate_person
+
+    rng = np.random.default_rng(seed)
+    start = datetime(2014, 1, 6, tzinfo=timezone.utc)
+    lines = []
+    for u in range(n_users):
+        jitter = 20.0 if identical_people else float(rng.lognormal(np.log(25.0), 0.9))
+        hour = float(rng.uniform(5.5, 21.0))
+        n_days_wk = int(np.clip(round(workouts_per_week), 1, 7))
+        days_of_week = tuple(rng.choice(7, size=n_days_wk, replace=False).tolist())
+        lon = float(rng.uniform(-125, 25))
+        prof = PersonProfile(
+            slots=[Slot(hour=hour, jitter_min=min(jitter, 300.0),
+                        days=days_of_week, p=0.8)],
+            name=f"u{u}",
+        )
+        log, _ = simulate_person(prof, start, days=days,
+                                 rng=int(rng.integers(1 << 30)), dropout=False)
+        # Undo the localisation the loader will apply, so the round trip lands
+        # back on the simulated local hour.
+        shift = round(lon / 15.0) * 3600.0
+        for t in log.t:
+            t0 = float(t) - shift
+            ts = [int(t0 + k * 10) for k in range(5)]
+            lat = [float(rng.uniform(30, 55))] * 5
+            lons = [lon] * 5
+            lines.append(
+                "{'id': %d, 'userId': '%d', 'sport': 'bike', 'gender': 'male', "
+                "'timestamp': %r, 'latitude': %r, 'longitude': %r, "
+                "'altitude': %r, 'heart_rate': %r}"
+                % (rng.integers(1 << 30), u, ts, lat, lons,
+                   [100.0] * 5, [140] * 5)
+            )
+    rng.shuffle(lines)
+
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "wt", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path

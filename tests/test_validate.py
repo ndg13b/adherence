@@ -168,3 +168,20 @@ def test_anchor_scale_diagnosis_reads_the_curve_shape():
     assert "does not have the phenomenon" in text
 
     assert diagnose_anchor_scale(real[:2])[0] == "unknown"
+
+
+def test_anchored_verdict_survives_saturated_reliability():
+    """Long histories push reliability near 1 everywhere, shrinking the decline.
+
+    The peak stays narrow, so the population is still anchored; a threshold on
+    the size of the fall-off would misfile precisely the best-measured cohorts.
+    """
+    from adherence.validate import diagnose_anchor_scale
+
+    saturated = [{"bandwidth_min": b, "reliability": r, "mean": 0.0, "sd": 0.0,
+                  "half_correlation": 0.0, "reliable_sd": 0.0}
+                 for b, r in [(15, 0.970), (30, 0.971), (45, 0.972), (60, 0.971),
+                              (120, 0.963), (240, 0.953), (360, 0.949)]]
+    key, text = diagnose_anchor_scale(saturated)
+    assert key == "anchored"
+    assert "45 min" in text
