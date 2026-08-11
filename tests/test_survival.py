@@ -227,3 +227,167 @@ def test_decaying_routine_is_seen_only_by_the_time_varying_model():
     assert tv_fit.coef[0] > 0.3, "moving score should detect the decay"
     assert tv_fit.p[0] < 0.01
     assert abs(frozen.coef[0]) < tv_fit.coef[0] / 2, "frozen score should see far less"
+
+
+# ------------------------------------------------------------------- separation
+def test_separated_data_is_reported_as_such_not_as_a_huge_effect():
+    """The most dangerous output a survival routine can produce.
+
+    When a covariate splits who fails from who does not, the partial likelihood
+    has no finite maximum. Newton-Raphson walks off happily and reports an
+    enormous coefficient with a small standard error and p=0 -- a result that
+    reads as overwhelming evidence and means the opposite.
+    """
+    from adherence.survival import cox_ph_time_varying
+
+    n = 300
+    x = np.concatenate([np.ones(n // 2), np.zeros(n // 2)])  # x=1 iff they fail
+    start = np.zeros(n)
+    stop = np.concatenate([np.linspace(1, 50, n // 2), np.full(n // 2, 60.0)])
+    event = x.copy()
+
+    fit = cox_ph_time_varying(x[:, None], start, stop, event)
+    assert fit.separated
+    assert not fit.usable
+    assert "SEPARATED" in str(fit)
+
+
+def test_a_clean_fit_is_marked_usable():
+    rng = np.random.default_rng(12)
+    x, t, e = _exponential_survival(1500, 0.6, rng)
+    fit = cox_ph(x[:, None], t, e)
+    assert fit.usable and not fit.separated
+
+
+def test_step_halving_does_not_move_a_converged_estimate():
+    """The guard may make the fit safer; it must not make it different."""
+    from adherence.survival import cox_ph_time_varying
+
+    rng = np.random.default_rng(21)
+    X, start, stop, event = _time_varying_data(1200, 0.7, rng)
+    fit = cox_ph_time_varying(X, start, stop, event)
+    assert fit.converged and fit.usable
+    assert fit.coef[0] == pytest.approx(0.7, abs=0.15)
+    # The optimum satisfies its own first-order condition regardless of the path
+    # taken to it, so the gradient at the answer must be ~0.
+    eps = 1e-5
+    up = cox_ph_time_varying(X, start, stop, event, max_iter=0)
+    assert up.coef[0] == 0.0  # max_iter=0 really does no work
+    assert abs(fit.coef[0]) > eps
+
+
+# ------------------------------------------------------- the robustness battery
+def _load_example(name):
+    import importlib.util
+    import pathlib
+    import sys
+
+    if name in sys.modules:
+        return sys.modules[name]
+    path = pathlib.Path(__file__).parent.parent / "examples" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    mod = importlib.util.module_from_spec(spec)
+    # Registered before execution: a @dataclass in the module resolves its own
+    # annotations through sys.modules, and fails outright if it is not there.
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_robustness_battery_rebuilds_the_original_rows_exactly():
+    """The faster builder must reproduce the analysis it is checking.
+
+    ``fitrec_falling`` shares one scoring pass across lags so that hundreds of
+    permutations are affordable. If that shortcut changed any number, every
+    check built on it would be examining a different result from the one that
+    was reported.
+    """
+    tv = _load_example("fitrec_timevarying")
+    fa = _load_example("fitrec_falling")
+
+    logs, end = fa.synthetic_cohort(n_people=40, seed=2, span_days=700)
+    warmup, interval, quiet, min_events, half_life = 90.0, 30.0, 180.0, 10, 28.0
+
+    for lag in (0.0, 30.0):
+        original = tv.build_intervals(logs, end, warmup, interval, lag, quiet,
+                                      min_events, half_life)
+        people = fa.prepare(logs, end, quiet, warmup, interval)
+        scores = fa.score_people(people, half_life, 30.0, min_events)
+        fast = fa.assemble(people, scores, interval, lag, min_events)
+
+        assert len(fast) == len(original) > 100
+        for a, b in zip(fast, original):
+            for key in ("start", "stop", "event", "score", "delta"):
+                assert a[key] == pytest.approx(b[key], abs=1e-12), key
+
+
+def test_the_battery_finds_an_effect_that_is_really_there():
+    """Otherwise a null from it would mean nothing.
+
+    The cohort is generated with consistency decaying before people quit, so a
+    battery with any power must recover it -- adjusted for the change in run
+    rate, outside its own permutation null, and in both random halves.
+    """
+    fa = _load_example("fitrec_falling")
+
+    logs, end = fa.synthetic_cohort(n_people=200, seed=1)
+    people = fa.prepare(logs, end, fa.TARGET["quiet"], fa.TARGET["warmup"],
+                        fa.TARGET["interval"])
+    scores = fa.score_people(people, fa.TARGET["half_life"], fa.TARGET["bandwidth"], 10)
+    rows = fa.assemble(people, scores, fa.TARGET["interval"], fa.TARGET["lag"], 10)
+    assert sum(r["event"] for r in rows) > 40
+
+    coef, _, p = fa.target_coef(rows)
+    assert coef > 0.3 and p < 0.01, "the built-in effect must be detected at all"
+
+    adjusted = fa.fit(rows, fa.TARGET_TERMS + ["run rate falling"])
+    i = fa.TARGET_TERMS.index("consistency falling")
+    assert adjusted.usable
+    assert adjusted.coef[i] > 0.3, "and must survive the change in run rate"
+
+    tracks = fa.permuted_scores(people, fa.TARGET["half_life"],
+                                fa.TARGET["bandwidth"], 10, 12)
+    null = []
+    for sc in tracks:
+        r = fa.assemble(people, sc, fa.TARGET["interval"], fa.TARGET["lag"], 10)
+        c, _, _ = fa.target_coef(r)
+        if np.isfinite(c):
+            null.append(c)
+    assert len(null) >= 10
+    assert abs(np.mean(null)) < 0.15, "the shuffle must be a null, centred on zero"
+    assert coef > max(null), "and the real effect must sit outside it"
+
+
+def test_the_permutation_null_is_flat_when_nothing_is_happening():
+    """The other half of the calibration: no effect, no signal.
+
+    Everyone here holds the same routine throughout and stops at a time that has
+    nothing to do with it. The battery must find nothing, or its passes mean
+    nothing.
+    """
+    from datetime import datetime, timezone
+
+    from adherence import EventLog
+
+    fa = _load_example("fitrec_falling")
+    base = datetime(2014, 1, 6, tzinfo=timezone.utc).timestamp()
+    rng = np.random.default_rng(4)
+    logs = {}
+    for u in range(200):
+        last = int(rng.integers(400, 650))  # quitting unrelated to anything
+        hour = float(rng.uniform(6, 20))
+        jitter = float(rng.uniform(15, 90))  # differs between people, never within
+        t = np.array(sorted(
+            base + d * 86400 + hour * 3600 + rng.normal(0, jitter * 60)
+            for d in range(last) if rng.random() < 0.55))
+        logs[u] = EventLog.from_records(t, t_start=t[0], t_end=t[-1])
+
+    end = base + 900 * 86400
+    people = fa.prepare(logs, end, fa.TARGET["quiet"], fa.TARGET["warmup"],
+                        fa.TARGET["interval"])
+    scores = fa.score_people(people, fa.TARGET["half_life"], fa.TARGET["bandwidth"], 10)
+    rows = fa.assemble(people, scores, fa.TARGET["interval"], fa.TARGET["lag"], 10)
+    assert sum(r["event"] for r in rows) > 40
+
+    coef, se, _ = fa.target_coef(rows)
+    assert abs(coef) < 3 * se + 0.15, f"found an effect where there is none: {coef:+.3f}"

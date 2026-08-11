@@ -232,7 +232,55 @@ score measured a month *before* the interval it predicts. An effect that
 survives the lag is a genuine early warning. One that appears only without a lag
 was measuring the slowdown itself.
 
-## 9. What none of this establishes
+On the running data the moving score found nothing either: the *level* of
+irregularity is null at every memory setting from a week to a year. One
+coefficient was not null — whether consistency is *falling* — at p = 0.014.
+
+## 9. Why that p = 0.014 is not a result
+
+This is the most useful thing in the project to understand, and it has nothing
+to do with routines.
+
+About **seventeen** coefficients were fitted across the time-varying analysis:
+two lags, three model forms, five memory lengths. If none of them were real, how
+many would come out below p = 0.05 anyway? On average **0.85**. Getting exactly
+one is not a signal; it is the expected outcome of looking seventeen times. The
+crude correction for that (Bonferroni: multiply by the number of looks) turns
+0.014 into 0.24.
+
+This is the same logic as running seventeen t-tests and reporting the one that
+worked, and it is worth stating flatly because a single p-value below 0.05, seen
+in isolation at the bottom of a long output, reads as a discovery.
+
+So why look at it further at all? Because of a *pattern* that is independent of
+the threshold. The effect was **larger with the lag than without it** (1.17
+versus 1.08). If the score were quietly detecting people already in the act of
+quitting, the estimate would be strongest with no lag and would fade as the gap
+widened. This one strengthens, which is the wrong shape for that particular
+artefact.
+
+That is a reason to examine a number, not to believe it. `examples/fitrec_falling.py`
+does the examining — four ways to break the one coefficient, rather than
+seventeen more chances to find another:
+
+| test | what it would catch |
+|---|---|
+| adjust for the *change* in run rate | the score falls partly because the person is doing less; the original model controlled only the *level* |
+| reshuffle each person's times of day | anything that survives when the timing structure is destroyed was never about timing |
+| split the people at random, fit both halves | an effect that lives in a handful of people |
+| vary interval, lag and memory (27 cells) | a result that only exists at one setting |
+
+The second is the strongest of the four, and worth a sentence on its own. It
+keeps every event time, every count and each person's overall distribution of
+times of day exactly as they are, and destroys only *which time went with which
+event*. A genuine "routine coming apart" cannot survive that. A statistical
+artefact of a shrinking sample can. Refitting a few hundred times gives a
+p-value that assumes nothing at all — and, as a bonus, an honest standard error:
+each person contributes about two dozen intervals that are not independent of
+each other, and a model that pretends otherwise reports more confidence than it
+has earned.
+
+## 10. What none of this establishes
 
 Nothing here is causal. A score that predicts disengagement would be a useful
 screening instrument; it would not show that *making* someone regular keeps them
