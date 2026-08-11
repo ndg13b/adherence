@@ -360,7 +360,64 @@ find one.
 `--self-test` runs the battery against a simulated cohort whose routines
 demonstrably do come apart before they quit. It recovers HR 1.97 and passes all
 four checks, which is the only thing that makes a null from it worth reporting.
-Building that self-test surfaced two failures worth recording:
+
+### The answer: it does not survive
+
+| check | running (618 people, 206 events) | cycling (527 people, 519 events) |
+|---|---|---|
+| reproduces the original | +0.1537, p 0.014 | +0.0448, p 0.295 |
+| adjusted for change in run rate | +0.1535, p 0.014 — unchanged | +0.0449, p 0.29 |
+| **permutation null** | **p 0.060**, null centred at **+0.0247** | **p 0.493**, null at +0.0137 |
+| split-half | 40/40 same direction, **0/40 significant** | 25/40, 0/40 |
+| design grid (27 cells) | present only at interval 30 / lag 30 | absent throughout |
+
+The cycling cohort had never been fitted and carries 2.5× the events, and it is
+null on every check. One caveat keeps it from being decisive on its own: **519
+of its 521 people are classed as having stopped**, because that subset spans
+5,019 days against running's 3,570, so the global end of data sits far past most
+people's last ride. Censoring is then doing no work and the contrast is between
+leaving early and leaving late, not between leavers and stayers. The script now
+prints this fraction and says so.
+
+So the cycling null is supporting evidence rather than the verdict. The verdict
+comes from the running cohort's own diagnostics, and three of them are worth
+keeping.
+
+**The permutation null is not centred on zero.** Shuffled data still produces
++0.0247. The covariate therefore carries a built-in association with
+disengagement that has nothing to do with timing, and the effect actually
+needing explanation is +0.129, not +0.154. Against a properly centred null,
+p = 0.060 rather than 0.014.
+
+The mechanism is the one the battery was built to catch. `timing_consistency` is
+a leave-one-out density estimated from a recency-weighted sample. As that sample
+thins the estimate degrades and drifts downward — and thinning precedes quitting.
+So the score falls before someone stops even when their times of day are random.
+
+**The parametric control missed it entirely.** Adding the change in log run rate
+moved the coefficient by 0.0002, and that covariate was itself dead null
+(HR 0.994, p 0.94). The artefact is real and the obvious adjustment for it found
+nothing, because a count over a fixed window and a recency-weighted effective
+sample size are not the same quantity. The shuffle holds volume fixed *exactly*
+and needs no model of it. That is the argument for permutation over adjustment,
+and it is not hypothetical here.
+
+**The grid shows one bright cell.** The effect exists at interval 30 with lag 30
+(+0.191 at 14-day memory, +0.154 at 28-day) and nowhere else. At interval 20 and
+45 it is gone. At lag 60 it *reverses* and is significantly negative (−0.181,
+p 0.008; −0.190, p 0.0004). Significant results in both directions across 27
+cells is what noise sliced 27 ways looks like.
+
+One correction to the battery itself: the split-half check originally counted
+"both halves positive", which assumed a null centred on zero. Once the
+permutation showed it is not, that criterion scores the artefact as a
+replication, so it now counts halves beyond the null's centre. It is the weakest
+of the four in any case — two halves of one dataset are not independent tests, so
+consistent direction is close to guaranteed whenever the full-sample estimate is
+non-zero. It rules out an effect carried by a handful of people, and nothing
+more.
+
+### Failures found while building the self-test
 
 - A first attempt had routines loosening over 150 days. With a 28-day memory the
   score has bottomed out well before the person quits, so the steepest falls

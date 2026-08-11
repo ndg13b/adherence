@@ -280,6 +280,44 @@ each person contributes about two dozen intervals that are not independent of
 each other, and a model that pretends otherwise reports more confidence than it
 has earned.
 
+### What happened when it was run
+
+It did not survive. Permutation p = 0.060; present in one cell of the 27-cell
+grid and reversed to a significant *negative* at a longer lag; and absent from
+the cycling cohort, which had never been fitted and carries 2.5× the events.
+
+The interesting part is *how* it failed. The permutation null turned out not to
+sit at zero — shuffling produced +0.025 on its own. There is a mechanical reason,
+and it is worth understanding because it applies to any score of this kind:
+
+> The consistency score is estimated from a **recency-weighted sample** of
+> someone's past sessions. When a person's sessions thin out, that sample gets
+> smaller, and a density estimated from fewer neighbours reads lower. Thinning
+> out is also what people do before they quit. So the score drifts downward
+> ahead of a disengagement **even when the times of day are pure noise**.
+
+That is a way of measuring "they did less", wearing the label "their routine
+came apart".
+
+Now the part worth remembering. The obvious fix is to put "change in run rate"
+into the model as a control — and it did nothing at all: it moved the
+coefficient by 0.0002 and was itself entirely non-significant. The artefact was
+real and the standard adjustment could not see it, because a count of sessions
+in a fixed window and a recency-weighted effective sample size are not the same
+quantity. The shuffle holds volume fixed *exactly* and needs no model of it.
+
+**When you can construct a null by rearranging your own data, prefer it to a
+covariate that approximates the same idea.** That is the transferable lesson
+here, and it cost one false positive to learn.
+
+One of the four checks also had to be corrected. Split-half replication was
+scored as "both halves positive", which silently assumed the null sat at zero.
+Once it did not, that criterion counts the artefact as a replication. It now
+scores halves against the null's actual centre — and it remains the weakest of
+the four, because two halves of one dataset are not independent tests. Consistent
+direction is near-guaranteed whenever the whole-sample estimate is non-zero. It
+rules out an effect driven by a handful of people, and nothing more.
+
 ## 10. What none of this establishes
 
 Nothing here is causal. A score that predicts disengagement would be a useful

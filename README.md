@@ -256,12 +256,23 @@ selected on having already persisted, with no true enrolment date.
 One coefficient came back at p = 0.014 — whether consistency is *falling*, in
 the lagged model. Seventeen coefficients were fitted, so the expected number
 below 0.05 under a global null is 0.85. `examples/fitrec_falling.py` exists to
-examine that single number rather than to add an eighteenth: it adjusts for the
-*change* in run rate, reshuffles each person's times of day to build a
-permutation null that assumes nothing, replicates across random halves, and
-sweeps the 27-cell design grid. `--self-test` runs the battery against a cohort
-with a known built-in effect (recovers HR 1.97, passes all four) so a null from
-it means something.
+examine that single number rather than to add an eighteenth, and **it does not
+survive**: permutation p = 0.060, present in only one cell of a 27-cell design
+grid (reversing to a *significant negative* at lag 60), and absent from the
+cycling cohort, which had never been fitted and carries 2.5× the events.
+
+The most useful thing it found is a methodological one. The permutation null is
+**not centred on zero** — shuffled data still yields +0.025. The score is a
+leave-one-out density from a recency-weighted sample, so as that sample thins the
+estimate drifts downward, and thinning precedes quitting. The score therefore
+falls before someone stops even when their times of day are random. Adjusting
+for the change in run rate — the obvious parametric control — moved the
+coefficient by 0.0002 and was itself null. The shuffle holds volume fixed
+*exactly* and needs no model of it. That is the case for permutation over
+adjustment, and it is not hypothetical here.
+
+`--self-test` runs the battery against a cohort with a known built-in effect
+(recovers HR 1.97, passes all four) so a null from it means something.
 
 ## Command line
 

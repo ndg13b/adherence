@@ -232,7 +232,7 @@ def _enough(rows, min_events: int = 20) -> bool:
 
 
 # ---------------------------------------------------------------------- checks
-def describe(rows: list[dict]) -> None:
+def describe(rows: list[dict], people: list[Person]) -> None:
     """The raw comparison the hazard ratio is a summary of."""
     ev = np.array([r["event"] for r in rows]) > 0
     delta = np.array([r["delta"] for r in rows])
@@ -243,6 +243,20 @@ def describe(rows: list[dict]) -> None:
                      ("median score", score)):
         print(f"    {label:22s} {np.median(v[ev]):11.4f} {np.median(v[~ev]):11.4f}")
     print(f"    {'intervals':22s} {int(ev.sum()):11d} {int((~ev).sum()):11d}")
+
+    # Disengagement is inferred from silence, so how much of the cohort ends up
+    # classed as stopped says how much work the censoring is doing.
+    stopped = sum(p.stopped for p in people)
+    share = stopped / max(len(people), 1)
+    print(f"\n  {stopped:,} of {len(people):,} people ({share:.0%}) are classed as "
+          f"having stopped.")
+    if share > 0.95:
+        print("  Almost nobody is censored, which means 'disengaged' has collapsed")
+        print("  into 'their data ended before the dataset did'. The comparison is")
+        print("  then between people who left early and people who left late, not")
+        print("  between leavers and stayers. Read any result here accordingly.")
+    elif share < 0.05:
+        print("  Almost nobody stopped, so there is very little outcome to predict.")
 
 
 def check_rate_change(rows) -> float:
@@ -289,7 +303,7 @@ def check_permutation(people, rows, args) -> float:
         null_se.append(se)
     if len(null) < 10:
         print("  Too few usable shuffles to form a null.")
-        return float("nan")
+        return float("nan"), 0.0
 
     null = np.array(null)
     reported = float(np.mean(null_se))
@@ -318,19 +332,35 @@ def check_permutation(people, rows, args) -> float:
     else:
         print("\n  The reported standard error matches the permutation spread, so")
         print("  clustering is not inflating significance here.")
-    return p_perm
+
+    centre = float(null.mean())
+    if abs(centre) > 0.3 * honest:
+        print(f"\n  The null does not sit at zero: shuffled data still gives {centre:+.4f}.")
+        print("  So the covariate carries a built-in association with disengagement")
+        print("  that has nothing to do with timing. A leave-one-out density is")
+        print("  estimated from a recency-weighted sample; as that sample thins the")
+        print("  estimate degrades, and thinning precedes quitting -- so the score")
+        print("  drifts down before someone stops even when their times are random.")
+        print(f"  The effect to explain is {obs - centre:+.4f}, not {obs:+.4f}.")
+    return p_perm, centre
 
 
-def check_split_half(people, args) -> float:
+def check_split_half(people, args, centre: float = 0.0) -> float:
     print("\n" + "=" * 74)
     print("3. SPLIT-HALF REPLICATION")
     print("=" * 74)
     print("  People split at random, each half fitted alone. An effect of the")
-    print("  claimed size lands positive in both halves ~90% of the time; chance,")
-    print("  25%.\n")
+    print("  claimed size lands beyond the null in both halves ~90% of the time;")
+    print("  chance manages 25%.")
+    if centre:
+        # Counting "both positive" against a null that is not centred on zero
+        # would score the artefact as a replication.
+        print(f"\n  Judged against the permutation null's centre ({centre:+.4f}), not")
+        print("  against zero -- otherwise the bias found above counts as a pass.")
+    print()
 
     sc = score_people(people, TARGET["half_life"], TARGET["bandwidth"], args.min_events)
-    both_pos = both_sig = usable = 0
+    both_beyond = both_sig = usable = 0
     print(f"  {'split':>6s} {'half A':>18s} {'half B':>18s}")
     for s in range(args.splits):
         rng = np.random.default_rng(2000 + s)
@@ -344,19 +374,25 @@ def check_split_half(people, args) -> float:
                 pair = []
                 break
             pair.append(target_coef(r))
-        if len(pair) != 2:
+        if len(pair) != 2 or not all(np.isfinite(c) for c, _, _ in pair):
             continue
         usable += 1
-        both_pos += pair[0][0] > 0 and pair[1][0] > 0
+        both_beyond += pair[0][0] > centre and pair[1][0] > centre
         both_sig += pair[0][2] < 0.05 and pair[1][2] < 0.05
         if s < 8:
             print(f"  {s:6d} " + " ".join(f"{c:+8.3f} (p{p:5.3f})" for c, _, p in pair))
     if not usable:
         print("  No usable splits -- too few events per half.")
         return float("nan")
-    print(f"\n  both halves positive       {both_pos}/{usable} ({both_pos / usable:.0%})")
-    print(f"  both halves p<0.05         {both_sig}/{usable} ({both_sig / usable:.0%})")
-    return both_pos / usable
+    label = "both halves beyond null" if centre else "both halves positive"
+    print(f"\n  {label:26s} {both_beyond}/{usable} ({both_beyond / usable:.0%})")
+    print(f"  {'both halves p<0.05':26s} {both_sig}/{usable} ({both_sig / usable:.0%})")
+    if both_beyond / usable > 0.7 and both_sig == 0:
+        print("\n  Consistent in direction but never significant in a half. Half a")
+        print("  cohort is genuinely underpowered for an effect this small, so this")
+        print("  is weak support at best -- it rules out an effect carried by a few")
+        print("  people, and nothing more.")
+    return both_beyond / usable
 
 
 def check_specifications(logs, dataset_end, args) -> None:
@@ -397,7 +433,7 @@ def check_specifications(logs, dataset_end, args) -> None:
               f"(se {se:.3f}, p {p:.3f})")
 
 
-def verdict(adjusted, p_perm, replication) -> None:
+def verdict(adjusted, p_perm, replication, sport: str, self_test: bool) -> None:
     print("\n" + "=" * 74)
     print("VERDICT")
     print("=" * 74)
@@ -407,27 +443,40 @@ def verdict(adjusted, p_perm, replication) -> None:
     if np.isfinite(p_perm):
         marks.append(("permutation p below 0.05", p_perm < 0.05))
     if np.isfinite(replication):
-        marks.append(("replicates in both halves >70% of splits", replication > 0.7))
+        marks.append(("holds beyond the null in both halves >70% of splits",
+                      replication > 0.7))
     for label, ok in marks:
         print(f"    [{'PASS' if ok else 'FAIL'}]  {label}")
-    if marks and all(ok for _, ok in marks):
+
+    passed = [ok for _, ok in marks]
+    if marks and all(passed):
         print("\n  Survives every check run here. That makes it worth pursuing, not")
         print("  worth believing: it is still one coefficient in one cohort, on an")
         print("  outcome (silence in a workout log) that is inferred rather than")
-        print("  observed. The next step is the untouched cohort, not a write-up.")
+        print("  observed.")
+    elif marks and not any(passed):
+        print("\n  Fails every check. Nothing here needs a subtler reading.")
     elif marks:
-        print("\n  It does not survive. The p of 0.014 was an artefact of the")
-        print("  analysis, and the time-varying result is null throughout -- which")
-        print("  is a finding worth recording, not a failure.")
+        print("\n  It does not survive. Passing some checks and failing others is not")
+        print("  a partial result -- a coefficient has to clear all of them to be")
+        print("  worth a second cohort, and the checks it failed are the ones that")
+        print("  assume least.")
 
-    print("\n  Either way one thing was already settled before this ran: with")
-    print("  seventeen coefficients fitted, a single p of 0.014 is not evidence.")
-    print("  Bonferroni puts it at 0.24. It earned a second look because it was the")
-    print("  *lagged* estimate and larger than the unlagged one -- the opposite of")
-    print("  what reverse causation produces -- not because it cleared a threshold.")
-    print("\n  The strongest test available is still untouched: rerun with")
-    print("  --sport bike. Nothing has been fitted there, so it is the one place")
-    print("  this could be confirmed rather than defended.")
+    if self_test:
+        print("\n  This was the self-test: the effect was built into the generator, so")
+        print("  passing shows the checks have power, and nothing about people.")
+        return
+
+    print("\n  Either way one thing was settled before this ran: with seventeen")
+    print("  coefficients fitted, a single p of 0.014 is not evidence. Bonferroni")
+    print("  puts it at 0.24. It earned a second look because it was the *lagged*")
+    print("  estimate and larger than the unlagged one -- the opposite of what")
+    print("  reverse causation produces -- not because it cleared a threshold.")
+
+    other = "bike" if sport == "run" else "run"
+    print(f"\n  Independent check: rerun with --sport {other}. A cohort that has not")
+    print("  been fitted is the only place a result like this can be confirmed")
+    print("  rather than defended.")
 
 
 # ------------------------------------------------------------------- self-test
@@ -554,15 +603,16 @@ def main(argv=None) -> int:
     c, se, pv = target_coef(rows)
     print(f"  consistency falling: {c:+.4f} (HR {math.exp(c):.3f}, se {se:.3f}, "
           f"p {pv:.3f})")
-    describe(rows)
+    describe(rows, people)
 
     adjusted = check_rate_change(rows) if "rate" not in skip else float("nan")
-    p_perm = check_permutation(people, rows, args) if "permutation" not in skip \
+    p_perm, centre = check_permutation(people, rows, args) \
+        if "permutation" not in skip else (float("nan"), 0.0)
+    replication = check_split_half(people, args, centre) if "split" not in skip \
         else float("nan")
-    replication = check_split_half(people, args) if "split" not in skip else float("nan")
     if "grid" not in skip:
         check_specifications(logs, dataset_end, args)
-    verdict(adjusted, p_perm, replication)
+    verdict(adjusted, p_perm, replication, args.sport, args.self_test)
 
     print(f"\nTotal time {time.time() - t0:.0f}s")
     return 0
