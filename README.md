@@ -44,7 +44,7 @@ model.best_window(window_min=60)        # (07:21, 08:21, p=0.33) -- when to nudg
 ```bash
 pip install -e .           # numpy + scipy
 pip install -e ".[dev]"    # + pytest
-pytest                     # 156 tests
+pytest                     # 169 tests
 ```
 
 ## What it measures
@@ -233,6 +233,36 @@ What it cannot do is say anything about dropout — two weeks is too short to se
 anyone quit. That needs a longer dataset; `adherence.datasets.load_event_csv`
 takes any `(user, timestamp)` CSV by column name.
 
+### Does regularity predict who keeps going?
+
+The FitRec running subset (618 people, years of history, genuine habit-scale
+anchors) is the first data able to address it. Two designs, two nulls:
+
+```bash
+python examples/fitrec_retention.py endomondoHR.json.gz      # frozen at baseline
+python examples/fitrec_timevarying.py endomondoHR.json.gz    # moving with the person
+python examples/fitrec_falling.py --self-test                # the robustness battery
+```
+
+**Frozen baseline:** HR 0.955 per SD (0.827–1.103). Not merely non-significant —
+the interval excludes anything above 1.10, at 99.6% power for HR 1.4. **Moving
+score:** null at every memory length from 7 to 365 days.
+
+The tell is that *frequency* does not predict retention either (HR 0.922,
+p = 0.33). When the obvious predictor also shows nothing, suspect the outcome:
+this measures abandoning Endomondo as Strava displaced it, from a cohort
+selected on having already persisted, with no true enrolment date.
+
+One coefficient came back at p = 0.014 — whether consistency is *falling*, in
+the lagged model. Seventeen coefficients were fitted, so the expected number
+below 0.05 under a global null is 0.85. `examples/fitrec_falling.py` exists to
+examine that single number rather than to add an eighteenth: it adjusts for the
+*change* in run rate, reshuffles each person's times of day to build a
+permutation null that assumes nothing, replicates across random halves, and
+sweeps the 27-cell design grid. `--self-test` runs the battery against a cohort
+with a known built-in effect (recovers HR 1.97, passes all four) so a null from
+it means something.
+
 ## Command line
 
 ```bash
@@ -269,9 +299,16 @@ Timestamps are not engagement; batch-syncing devices manufacture regularity. If
 the intervention *assigns* a time, the score measures compliance with an
 instruction rather than an endogenous habit. Irregular engagement may be
 irregular life — shift work, caring, illness — so this is reasonable for
-targeting support and not for judging people. Nothing here is causal. And
-everything above is simulation: the package has not been validated on a real
-dataset.
+targeting support and not for judging people. Nothing here is causal.
+
+And the headline claim is still untested. Real data has established that the
+score is **reliable** and that it measures something other than **frequency** —
+which most published regularity indices do not, as the Sleep Regularity Index's
+−1.00 correlation with session count shows. Whether regularity predicts
+**retention** remains open: both public datasets that are long enough to ask
+have an outcome (leaving a platform) that is not the behaviour, and a cohort
+selected on having already persisted. Answering it needs data with a real
+enrolment date.
 
 **New to this kind of model?** `docs/HOW-IT-WORKS.md` explains the mechanics in
 plain terms — what is predicted, how the score moves over time, what every
@@ -296,6 +333,15 @@ src/adherence/
   validate.py    split-half reliability, bandwidth scan, anchor-scale diagnosis
   screen.py      one screening pass over a loaded cohort
   cli.py
+
+examples/
+  discrimination.py    kernel score vs. SRM, IS, IV, SRI, entropy
+  cohort_power.py      how many participants, how long a run-in
+  duolingo_check.py    reliability on the Duolingo traces
+  fitrec_check.py      does an exercise population have habit-scale anchors
+  fitrec_retention.py  consistency frozen at baseline vs. time to dropout
+  fitrec_timevarying.py  consistency that moves with the person
+  fitrec_falling.py    four ways to break the one surviving coefficient
 ```
 
 MIT licensed.

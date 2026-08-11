@@ -285,6 +285,95 @@ Testing it properly needs a dataset with a real enrolment date and an outcome
 that is the behaviour rather than the platform. That points back to
 purpose-collected data, or to something like the Brighten trials.
 
+## The time-varying test: a null, and one survivor
+
+The frozen-baseline design above can only detect a *trait*. It scores each
+person once and asks whether the regular ones lasted longer, which is blind to
+the thing the concept actually describes — a routine coming apart. People rarely
+quit out of a steady habit. So `examples/fitrec_timevarying.py` re-scores every
+person every 30 days using only their history to that point, and asks whether
+someone is at higher risk *while* their consistency is low or falling
+(Andersen–Gill counting-process Cox).
+
+618 usable running people, ~15,000 intervals, 207 disengagements.
+
+**The level of irregularity is null at every memory length**, adjusted for run
+rate, at lag 30:
+
+| half-life | log HR | p |
+|---|---|---|
+| 7 d | +0.016 | 0.82 |
+| 14 d | −0.008 | 0.91 |
+| 28 d | −0.042 | 0.52 |
+| 90 d | −0.013 | 0.84 |
+| 365 d | +0.042 | 0.57 |
+
+That sweep exists because the memory length decides whether the score *can* see
+decay at all, and the setting that maximises reliability is the wrong one for
+this question: a total 30-day collapse moves the score −0.79 with a 7-day memory
+and only −0.11 with a 365-day one. Reliability rewards a stable description of a
+person; detecting change needs the opposite. Nothing appears at either extreme
+or anywhere between, so the null is not an artefact of that choice.
+
+One coefficient was not null. Adding *whether consistency is falling*:
+
+| | lag 0 | lag 30 |
+|---|---|---|
+| irregularity | 0.995 (p 0.94) | 0.920 (p 0.21) |
+| **consistency falling** | 1.079 (p 0.27) | **1.166 (se 0.062, p 0.014)** |
+| log run rate | 1.013 | 0.903 (p 0.14) |
+
+**This is not evidence, and the arithmetic says so plainly.** Roughly seventeen
+coefficients were fitted across two lags, three model forms and five memory
+lengths. One at p < 0.05 is what chance produces — the expected count under a
+global null is 0.85, and Bonferroni puts that p at 0.24.
+
+What made it worth examining rather than discarding is the *pattern*, not the
+threshold: it is larger in the lagged fit (1.166) than the unlagged one (1.079).
+Reverse causation produces the opposite ordering. Someone already winding down
+looks both irregular and about to quit, so a contaminated estimate is strongest
+with no lag and decays as the gap widens. This one strengthens.
+
+### Examining it: `examples/fitrec_falling.py`
+
+Four ways to break a single coefficient, rather than seventeen more chances to
+find one.
+
+1. **Is it just a falling run rate?** The score is a leave-one-out density
+   estimated from a recency-weighted sample. When someone thins out that sample
+   shrinks and the estimate drifts down on its own — and thinning out precedes
+   quitting. The original model adjusted for the *level* of the run rate, which
+   is the wrong control for a *change*.
+2. **A permutation null.** Reorder each person's times of day among their own
+   events. Every event time, every count and their marginal time-of-day
+   distribution survive; only the pairing between them goes, and with it any
+   trend in the timing. A routine coming apart cannot survive that shuffle; a
+   sample-size artefact can. This also answers a question the Wald test cannot:
+   each person contributes ~24 correlated intervals, and a model treating them
+   as independent understates its own uncertainty. The permutation SD *is* the
+   honest standard error.
+3. **Split-half replication.** An effect of the claimed size lands positive in
+   both random halves ~90% of the time; chance manages 25%.
+4. **The design grid.** Interval × lag × memory, 27 cells. A real effect is
+   dented by moving them; a fluke is one bright cell.
+
+`--self-test` runs the battery against a simulated cohort whose routines
+demonstrably do come apart before they quit. It recovers HR 1.97 and passes all
+four checks, which is the only thing that makes a null from it worth reporting.
+Building that self-test surfaced two failures worth recording:
+
+- A first attempt had routines loosening over 150 days. With a 28-day memory the
+  score has bottomed out well before the person quits, so the steepest falls
+  land in intervals where *nobody* quits — and the coefficient came out strongly
+  **negative**. The decay lead time has to exceed lag + interval without greatly
+  exceeding the memory. This is a real constraint on what the design can detect,
+  not a quirk of the simulation.
+- A cleaner version was perfectly separable, and the Cox fit walked off to a
+  coefficient of −19,217 with a standard error of 0.25 and p = 0 — a result that
+  reads as overwhelming evidence and means the likelihood has no maximum.
+  `adherence.survival` now does step-halving and flags separation explicitly,
+  and `CoxResult.usable` gates anything built on a fit.
+
 ## Where this could break on real data
 
 Stated plainly, because these are the things that would sink a study.
@@ -320,7 +409,13 @@ Stated plainly, because these are the things that would sink a study.
 - Hierarchical pooling across a cohort, so a new participant's score borrows
   strength from the population instead of waiting weeks for data.
 - Competing-risks survival, separating "quit" from "completed the programme".
-- Validation on a real dataset. Everything above is simulation.
+- A cluster-robust (Lin–Wei sandwich) variance for the time-varying fit, so the
+  standard errors are right by construction rather than checked by permutation
+  after the fact.
+- Validation on a dataset with a real enrolment date and an outcome that is the
+  behaviour rather than the platform. Duolingo and FitRec establish that the
+  score is reliable and that it measures something other than frequency; neither
+  can test the retention claim, for the reasons above.
 
 ## References
 
