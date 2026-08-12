@@ -4,6 +4,10 @@ Written for someone comfortable with research and statistics but not with data
 science. No prior knowledge of machine learning is assumed. `docs/CONCEPT.md`
 covers the prior art and the empirical results; this covers the mechanics.
 
+If you have not met the project before, read `docs/OVERVIEW.md` first — it says
+what counts as an "engagement", which domains this applies to, and which of the
+project's claims are established and which are still open.
+
 ## 1. What the model is actually for
 
 The thing the model produces is a **forecast of when**:
