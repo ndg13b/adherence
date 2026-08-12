@@ -1,5 +1,9 @@
 # The concept, the prior art, and what is actually new
 
+The full technical record. For the plain-language tour — what counts as an
+engagement, which claims are established and which are open, what the whole thing
+is useful for — see `docs/OVERVIEW.md`.
+
 ## The idea
 
 People who engage with something at the same time of day, on the same days,

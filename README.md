@@ -3,13 +3,32 @@
 Scoring how *regular* someone's engagement is, and turning that into a forecast
 of when they will engage next.
 
-The premise: people who engage at the same time of day, on the same days, keep
-doing it. Regularity of schedule — not just volume of engagement — predicts
-whether a behaviour survives. This package makes that measurable.
+Some people do a thing at the same time every day. Others do the same amount of
+it, scattered anywhere across the day. Those are different behaviours, and the
+difference is usually invisible in the data people collect — a training log
+records *how many* sessions, rarely *how regular* they were. This package
+measures the second from nothing but a list of timestamps.
 
-Everything is applied to engagement events, so it works the same for a cognitive
-training programme, medication timing, exercise, or a habit someone is trying to
-break.
+**The input is engagement events**: one timestamp per occasion on which a person
+did the thing. The package never sees what the behaviour was, which is why the
+same code applies to cognitive training, exercise, medication timing,
+physiotherapy, meditation, or a habit someone is trying to break. What it needs
+is that the occasions are discrete, that there are enough of them (~10 minimum,
+30+ for a good score), and that **the person chose the time** — if a protocol
+assigns a slot, the score measures compliance with an instruction instead.
+
+**Three claims, kept apart**, because they are usually bundled and they should
+not be:
+
+| claim | status |
+|---|---|
+| it **measures** schedule regularity, distinctly from frequency, reliably per person | established on real data (split-half 0.93) |
+| it **forecasts** when someone will next engage | established on simulated data; not yet rerun head-to-head on a real cohort |
+| regularity **predicts who keeps going** | open — two attempts, both on data unable to answer it |
+
+**New here?** [`docs/OVERVIEW.md`](docs/OVERVIEW.md) is the plain-language tour:
+what counts as engagement, what has and has not been shown, what you could use
+it for today, and what it should not be used for.
 
 ```python
 from adherence import EventLog, RoutineModel, consistency_report
@@ -146,6 +165,14 @@ hour-of-day histogram      +0.597
 
 On a person with no routine at all, the model scores +0.03 — near zero, as it
 must, or the metric would be flattering itself.
+
+**One gap, stated plainly.** That comparison has only ever been run on simulated
+people. The real-data work below measured *reliability*, not forecast skill, so
+the claim "it forecasts better than the alternatives" is established in
+simulation and not yet on a real cohort. The prequential machinery it rests on is
+leakage-proof by construction and tested as such, but that is not the same thing.
+Rerunning `evaluate.compare` on the FitRec running subset is the cheapest
+outstanding check in the project.
 
 ## Study design
 
@@ -321,11 +348,15 @@ have an outcome (leaving a platform) that is not the behaviour, and a cohort
 selected on having already persisted. Answering it needs data with a real
 enrolment date.
 
-**New to this kind of model?** `docs/HOW-IT-WORKS.md` explains the mechanics in
-plain terms — what is predicted, how the score moves over time, what every
-parameter means, and how the out-of-sample checks work. `docs/CONCEPT.md` has the
-prior art, what is and is not novel, the real-data results, and the failure
-modes.
+## Documentation
+
+Three docs, in increasing depth. None assumes you have read the others.
+
+| | for | covers |
+|---|---|---|
+| [`docs/OVERVIEW.md`](docs/OVERVIEW.md) | anyone | what counts as engagement, what has and has not been established, what it is useful for today, what it must not be used for |
+| [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) | comfortable with research, new to this kind of model | what is predicted, how the score moves over time, every parameter in plain terms, how the out-of-sample checks work, and why one p = 0.014 was not a result |
+| [`docs/CONCEPT.md`](docs/CONCEPT.md) | doing this properly | prior art, what is and is not novel, every real-data result in full, and the failure modes |
 
 ## Layout
 
