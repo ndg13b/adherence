@@ -166,13 +166,19 @@ def _loo_kernel_score(phase, w, kern, groups) -> float:
             continue
         p, ww = phase[g], w[g]
         total = ww.sum()
-        if total <= 0:
+        if not np.isfinite(total) or total <= 0:
             continue
-        # Full KDE at each event (self included), then subtract the self term.
-        dens_all = _weighted_kde(p, p, ww, kern) * total
-        loo = (dens_all - ww * peak) / np.maximum(total - ww, 1e-12)
+        # Rescale so the weights sum to 1 within the group. Only their ratios
+        # carry meaning, and without this the score depends on their absolute
+        # size: recency weights are 2^(-age/half-life), so an observation window
+        # ending years after a person's last event drives every weight to ~1e-16,
+        # the leave-one-out denominator below its floor, and the whole score to
+        # zero. That silently zeroed real routines before it was caught.
+        ww = ww / total
+        dens_all = _weighted_kde(p, p, ww, kern)
+        loo = (dens_all - ww * peak) / np.maximum(1.0 - ww, 1e-12)
         num += float((ww * loo).sum())
-        den += float(total)
+        den += 1.0
     if den <= 0:
         return float("nan")
     return float(np.clip((num / den - uniform) / (peak - uniform), 0.0, 1.0))
@@ -204,6 +210,186 @@ def timing_consistency(
         [log.dow == d for d in range(7)] if by_weekday else [np.ones(len(log), dtype=bool)]
     )
     return _loo_kernel_score(phase, w, model._k, groups)
+
+
+#: Above this many events the pairwise kernel matrix is not worth its memory
+#: (n=4000 is 128 MB), so the slower per-moment path is used instead.
+_MAX_GRAM = 4000
+
+
+def _gram(phase: np.ndarray, kern) -> np.ndarray:
+    """Pairwise kernel weights ``exp(log_pdf(phase_i - phase_j))``, chunked."""
+    n = phase.size
+    out = np.empty((n, n), dtype=float)
+    chunk = max(1, int(4_000_000 // max(n, 1)))
+    for i in range(0, n, chunk):
+        out[i : i + chunk] = np.exp(kern.log_pdf(phase[i : i + chunk, None] - phase[None, :]))
+    return out
+
+
+def _score_from_density(dens_all: np.ndarray, ww: np.ndarray, peak: float) -> float:
+    """The tail of ``_loo_kernel_score`` once the KDE heights are in hand."""
+    loo = (dens_all - ww * peak) / np.maximum(1.0 - ww, 1e-12)
+    uniform = 1.0 / TWO_PI
+    return float(np.clip((float((ww * loo).sum()) - uniform) / (peak - uniform), 0.0, 1.0))
+
+
+def _normalised(w: np.ndarray):
+    """Weights rescaled to sum to 1, or ``None`` if they cannot be."""
+    total = w.sum()
+    if not np.isfinite(total) or total <= 0:
+        return None
+    return w / total
+
+
+def _score_from_gram(gram: np.ndarray, w: np.ndarray, peak: float) -> float:
+    """``_loo_kernel_score`` for a single group, given its pairwise weights."""
+    ww = _normalised(w)
+    if ww is None:
+        return float("nan")
+    return _score_from_density((gram @ ww) / ww.sum(), ww, peak)
+
+
+def _recency_weights(log: EventLog, k: int, moment: float, half_life_days: float):
+    return log.weight[:k] * np.exp2(
+        -(moment - log.t[:k]) / SECONDS_PER_DAY / half_life_days
+    )
+
+
+def timing_consistency_track(
+    log: EventLog,
+    at,
+    model: RoutineModel | None = None,
+    min_events: int = 2,
+    phase: np.ndarray | None = None,
+) -> np.ndarray:
+    """:func:`timing_consistency` re-evaluated at each moment in ``at``.
+
+    Each score uses only events strictly before its moment, so the returned
+    array is a person's consistency as it stood at a sequence of times --
+    exactly what a time-varying survival model needs, and what shows whether a
+    routine held or came apart.
+
+    Identical to calling ``timing_consistency(log.slice(t_to=a), model, now=a)``
+    in a loop, but the timezone-dependent phases are computed once rather than
+    once per moment. That is the whole cost of the loop, and removing it is what
+    makes permutation tests and parameter sweeps affordable.
+
+    Parameters
+    ----------
+    min_events:
+        Moments with fewer prior events than this return ``nan`` rather than a
+        score estimated from too little history.
+    phase:
+        Override the times of day, keeping the event *times* as they are. This
+        exists for permutation nulls: reordering a person's own phases holds
+        their event count, their engagement trajectory and their overall time-of-day
+        distribution fixed while destroying any relationship between *when* in
+        their history an event fell and *what time* it fell at. A score
+        trajectory that still predicts an outcome under that shuffle was never
+        measuring the routine.
+    """
+    model = model or RoutineModel()
+    at = np.atleast_1d(np.asarray(at, dtype=float))
+    ph = log.daily_phase if phase is None else np.asarray(phase, dtype=float)
+    if ph.shape != log.t.shape:
+        raise ValueError("phase must have one value per event")
+
+    out = np.full(at.shape, float("nan"))
+    floor = max(int(min_events), 2)
+    peak = math.exp(model._k.peak_log_pdf)
+    # Successive moments share their history, so the pairwise kernel weights are
+    # computed once and each moment reads the leading block. Without this the
+    # same event pair is re-evaluated at every later moment.
+    gram = _gram(ph, model._k) if ph.size <= _MAX_GRAM else None
+
+    for i, moment in enumerate(at):
+        k = int(np.searchsorted(log.t, moment, side="left"))  # slice() is half-open
+        if k < floor:
+            continue
+        w = _recency_weights(log, k, moment, model.half_life_days)
+        if gram is None:
+            out[i] = _loo_kernel_score(ph[:k], w, model._k, [np.ones(k, dtype=bool)])
+        else:
+            out[i] = _score_from_gram(gram[:k, :k], w, peak)
+    return out
+
+
+def timing_consistency_track_permuted(
+    log: EventLog,
+    at,
+    n_permutations: int,
+    model: RoutineModel | None = None,
+    min_events: int = 2,
+    seed: int = 0,
+) -> np.ndarray:
+    """Null distribution of a person's score trajectory, shape ``(n_permutations, len(at))``.
+
+    Each row is :func:`timing_consistency_track` computed after reordering this
+    person's times of day among their own events. What that holds fixed is
+    everything about *volume*: every event time, every count, every gap, and the
+    person's overall distribution of times of day. What it destroys is the only
+    thing left -- which time went with which event, and therefore any trend in
+    the timing.
+
+    This is the null a time-varying analysis needs. A consistency score is
+    estimated from a recency-weighted sample, so it drifts on its own as that
+    sample thins, and thinning out is exactly what precedes someone quitting. A
+    score trajectory that still predicts the outcome under this shuffle was
+    tracking the person's dwindling event count, not their routine.
+
+    Reordering permutes the pairwise kernel weights rather than changing them,
+    so the expensive part is computed once and shared across every permutation.
+    """
+    model = model or RoutineModel()
+    at = np.atleast_1d(np.asarray(at, dtype=float))
+    ph = log.daily_phase
+    n = ph.size
+    rng = np.random.default_rng(seed)
+    reps = int(n_permutations)
+    out = np.full((reps, at.size), float("nan"))
+    if at.size == 0 or n == 0 or reps <= 0:
+        return out
+
+    floor = max(int(min_events), 2)
+    peak = math.exp(model._k.peak_log_pdf)
+    counts = np.searchsorted(log.t, at, side="left")
+
+    # Moments with enough history, and their (fixed) recency weights. The
+    # weights do not depend on the reordering -- only on when each event was.
+    usable = []
+    for i, moment in enumerate(at):
+        k = int(counts[i])
+        if k < floor:
+            continue
+        ww = _normalised(_recency_weights(log, k, moment, model.half_life_days))
+        if ww is not None:
+            usable.append((i, k, ww, ww.sum()))
+    if not usable:
+        return out
+
+    if n > _MAX_GRAM:  # too large to hold; pay the kernel evaluations each time
+        for r in range(reps):
+            order = rng.permutation(n)
+            for i, k, ww, _ in usable:
+                out[r, i] = _loo_kernel_score(ph[order[:k]], ww, model._k,
+                                              [np.ones(k, dtype=bool)])
+        return out
+
+    gram = _gram(ph, model._k)
+    # One matrix product per permutation rather than one per moment: scatter each
+    # moment's weights into its own column, and every column is transformed at
+    # once. The moments share a history, so they share almost all of the work.
+    scratch = np.zeros((n, len(usable)))
+    for r in range(reps):
+        order = rng.permutation(n)
+        scratch[:] = 0.0
+        for col, (_, k, ww, _) in enumerate(usable):
+            scratch[order[:k], col] = ww
+        dens = gram @ scratch
+        for col, (i, k, ww, total) in enumerate(usable):
+            out[r, i] = _score_from_density(dens[order[:k], col] / total, ww, peak)
+    return out
 
 
 def _within_anchor_score(phase, w, kern, bw, min_share, grid, n_max=None) -> tuple[float, int]:

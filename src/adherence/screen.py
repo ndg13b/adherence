@@ -18,6 +18,8 @@ from .validate import (
     SCORERS,
     bandwidth_scan,
     format_bandwidth_scan,
+    format_half_life_scan,
+    half_life_scan,
     reliability_report,
 )
 
@@ -48,6 +50,7 @@ def screen(
     half_life_days: float = 28.0,
     with_anchor_precision: bool = False,
     do_bandwidth_scan: bool = False,
+    do_half_life_scan: bool = False,
     short_span_days: float = 60.0,
 ) -> dict:
     """Print the full screening report. Returns the pieces for further use."""
@@ -80,10 +83,18 @@ def screen(
     if do_bandwidth_scan:
         print("\n\nBandwidth scan -- is this resolution right for these people?")
         print("(reusing the loaded data, so this is fast)\n")
-        scan = bandwidth_scan(res.logs)
+        # Must inherit the caller's half-life: scanning bandwidth at a different
+        # memory from the headline report compares two different models.
+        scan = bandwidth_scan(res.logs, half_life_days=half_life_days)
         print(format_bandwidth_scan(scan))
 
-    return {"report": report, "model": model, "scan": scan}
+    hl_scan = None
+    if do_half_life_scan:
+        print("\n\nHalf-life scan -- how much of each history is the score using?\n")
+        hl_scan = half_life_scan(res.logs, bandwidth_min=bandwidth_min)
+        print(format_half_life_scan(hl_scan))
+
+    return {"report": report, "model": model, "scan": scan, "half_life_scan": hl_scan}
 
 
 def write_scores(path: str, logs, model, scorers=None) -> None:

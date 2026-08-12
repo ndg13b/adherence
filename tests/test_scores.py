@@ -20,6 +20,8 @@ from adherence.scores import (
     prequential_timing_bits,
     resultant_length,
     timing_consistency,
+    timing_consistency_track,
+    timing_consistency_track_permuted,
     weekday_regularity,
 )
 from adherence.simulate import PersonProfile, Slot, simulate_person
@@ -231,3 +233,163 @@ def test_short_history_is_flagged_not_guessed():
     r = consistency_report(log)
     assert r.warmup
     assert np.isnan(r.timing_bits)
+
+
+def test_score_is_invariant_to_the_scale_of_recency_weights():
+    """Only weight ratios may matter, never their absolute size.
+
+    Recency weights are 2^(-age/half-life), so an observation window ending
+    years after someone's last event drives every weight to ~1e-16. An absolute
+    floor in the leave-one-out denominator then clamped, and a genuinely tight
+    routine scored exactly 0.0000 instead of 0.7425. Real data hit this the
+    moment a dataset spanned years rather than weeks.
+    """
+    base = datetime(2012, 1, 5, tzinfo=timezone.utc).timestamp()
+    rng = np.random.default_rng(0)
+    t = np.array([base + d * 86400 + 8 * 3600 + rng.normal(0, 1800) for d in range(200)])
+    model = RoutineModel(bandwidth_min=45.0, half_life_days=28.0)
+
+    own = EventLog.from_records(t, t_start=t[0], t_end=t[-1])
+    stretched = EventLog.from_records(t, t_start=t[0], t_end=t[-1] + 4 * 365 * 86400)
+
+    score = timing_consistency(own, model)
+    assert score > 0.5, "a tight routine must score well in the first place"
+    assert timing_consistency(stretched, model) == pytest.approx(score, abs=1e-9)
+
+
+def test_score_is_invariant_to_a_constant_weight_multiplier():
+    """The same property stated directly on per-event weights."""
+    base = datetime(2020, 1, 6, tzinfo=timezone.utc).timestamp()
+    t = np.array([base + d * 86400 + 9 * 3600 for d in range(60)])
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=10_000)
+    plain = EventLog.from_records(t, t_start=t[0], t_end=t[-1])
+    tiny = EventLog.from_records(t, weights=np.full(t.size, 1e-18),
+                                 t_start=t[0], t_end=t[-1])
+    assert timing_consistency(tiny, model) == pytest.approx(
+        timing_consistency(plain, model), abs=1e-9)
+
+
+# ------------------------------------------------ scoring the same person repeatedly
+def _decaying_person(seed=0, tight_days=200, loose_days=160):
+    """Tight at 07:00, then coming apart. The trajectory is the point."""
+    base = datetime(2014, 1, 6, tzinfo=timezone.utc).timestamp()
+    rng = np.random.default_rng(seed)
+    t = [base + d * 86400 + 7 * 3600 + rng.normal(0, 10 * 60)
+         for d in range(tight_days)]
+    t += [base + (tight_days + d) * 86400 + rng.uniform(5, 22) * 3600
+          for d in range(loose_days)]
+    t = np.array(sorted(t))
+    return EventLog.from_records(t, tz="Europe/London", t_start=t[0], t_end=t[-1])
+
+
+def test_track_matches_scoring_one_moment_at_a_time():
+    """The fast path exists for speed only; it must change no number.
+
+    It shares the pairwise kernel weights across moments instead of rebuilding
+    them, which is worth an order of magnitude and would be worth nothing if it
+    quietly returned something else.
+    """
+    log = _decaying_person()
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=28.0)
+    at = np.linspace(log.t[0] + 90 * 86400, log.t[-1], 20)
+
+    one_at_a_time = np.array([
+        timing_consistency(log.slice(t_to=a), model, now=a) for a in at])
+    np.testing.assert_allclose(
+        timing_consistency_track(log, at, model), one_at_a_time, atol=1e-12)
+
+
+def test_track_falls_when_the_routine_comes_apart():
+    log = _decaying_person()
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=28.0)
+    at = np.array([log.t[0] + d * 86400 for d in (150.0, 200.0, 260.0, 340.0)])
+    track = timing_consistency_track(log, at, model, min_events=10)
+    assert min(track[0], track[1]) > 0.6, "should score well while the routine holds"
+    assert track[3] < 0.15, "and near zero once the times are scattered"
+    assert track[2] < track[1], "with the fall beginning as soon as it does"
+
+
+def test_track_needs_history_before_it_reports_anything():
+    log = _decaying_person()
+    at = np.array([log.t[0] - 86400, log.t[0] + 3 * 86400, log.t[0] + 200 * 86400])
+    track = timing_consistency_track(log, at, min_events=10)
+    assert np.isnan(track[0]) and np.isnan(track[1])
+    assert np.isfinite(track[2])
+
+
+def test_permuted_track_equals_scoring_the_reordered_phases():
+    """The batched permutation must agree with the obvious implementation."""
+    log = _decaying_person(seed=3)
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=28.0)
+    at = np.linspace(log.t[0] + 90 * 86400, log.t[-1], 12)
+
+    perms = timing_consistency_track_permuted(log, at, 4, model, min_events=10, seed=5)
+    rng = np.random.default_rng(5)
+    phase = log.daily_phase
+    for r in range(4):
+        order = rng.permutation(phase.size)
+        direct = timing_consistency_track(log, at, model, min_events=10,
+                                          phase=phase[order])
+        np.testing.assert_allclose(perms[r], direct, atol=1e-12)
+
+
+def test_permutation_holds_the_level_but_destroys_the_trend():
+    """What the null is for: it must keep how regular someone is overall while
+    removing *when* they were regular.
+
+    Reordering a person's own times of day cannot change their marginal
+    distribution of times, so a permuted person is about as regular on average.
+    What it does remove is the decay -- so the real track ends far below where
+    it started and the permuted tracks do not.
+    """
+    log = _decaying_person(seed=1)
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=28.0)
+    at = np.array([log.t[0] + d * 86400 for d in (150.0, 340.0)])
+
+    real = timing_consistency_track(log, at, model, min_events=10)
+    null = timing_consistency_track_permuted(log, at, 30, model, min_events=10, seed=0)
+
+    real_drop = real[0] - real[1]
+    null_drop = null[:, 0] - null[:, 1]
+    assert real_drop > 0.5, "the real routine must visibly come apart"
+    assert abs(np.median(null_drop)) < 0.1, "a shuffled history must not trend"
+    assert real_drop > np.quantile(null_drop, 0.99)
+
+
+def test_permutation_leaves_a_stable_routine_alone():
+    """A person whose timing never changes has nothing for the shuffle to break.
+
+    This is the property that makes the null specific: it targets the *trend* in
+    someone's timing, not their regularity, so it cannot be accused of simply
+    destroying the signal it is testing.
+    """
+    base = datetime(2014, 1, 6, tzinfo=timezone.utc).timestamp()
+    rng = np.random.default_rng(2)
+    t = np.array([base + d * 86400 + 7 * 3600 + rng.normal(0, 12 * 60)
+                  for d in range(300)])
+    log = EventLog.from_records(t, t_start=t[0], t_end=t[-1])
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=28.0)
+    at = np.array([t[0] + 250 * 86400])
+
+    real = timing_consistency_track(log, at, model, min_events=10)[0]
+    null = timing_consistency_track_permuted(log, at, 20, model, min_events=10)
+    assert real == pytest.approx(float(np.mean(null)), abs=0.05)
+
+
+def test_permuted_track_falls_back_correctly_for_a_large_history():
+    """Above the memory guard a different code path runs; it must agree."""
+    from adherence import scores as _scores
+
+    log = _decaying_person(seed=4, tight_days=60, loose_days=40)
+    model = RoutineModel(bandwidth_min=30.0, half_life_days=28.0)
+    at = np.linspace(log.t[0] + 30 * 86400, log.t[-1], 6)
+
+    batched = timing_consistency_track_permuted(log, at, 3, model, min_events=10, seed=9)
+    original = _scores._MAX_GRAM
+    try:
+        _scores._MAX_GRAM = 1  # force the low-memory path
+        looped = timing_consistency_track_permuted(log, at, 3, model,
+                                                   min_events=10, seed=9)
+    finally:
+        _scores._MAX_GRAM = original
+    np.testing.assert_allclose(batched, looped, atol=1e-12)

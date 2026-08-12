@@ -185,3 +185,23 @@ def test_anchored_verdict_survives_saturated_reliability():
     key, text = diagnose_anchor_scale(saturated)
     assert key == "anchored"
     assert "45 min" in text
+
+
+def test_half_life_scan_prefers_a_long_memory_for_a_stable_routine(tmp_path):
+    """A routine that never moves is measured better by using all of it.
+
+    At a 28-day half-life a three-year history is judged almost entirely on its
+    last two months, which throws away most of the data for no benefit when the
+    routine is stable.
+    """
+    from adherence.datasets import load_fitrec, write_synthetic_fitrec
+    from adherence.validate import format_half_life_scan, half_life_scan
+
+    p = write_synthetic_fitrec(str(tmp_path / "stable.json"), n_users=60,
+                               days=900, seed=11)
+    logs = load_fitrec(p, sample_pct=100.0, min_events=30, min_days=90,
+                       verbose=False).logs
+    rows = half_life_scan(logs, half_lives=(14.0, 365.0))
+    short, long = rows[0]["reliability"], rows[1]["reliability"]
+    assert long > short
+    assert "half-life" in format_half_life_scan(rows)

@@ -25,6 +25,8 @@ from .scores import (
     outlook,
     prequential_timing_bits,
     timing_consistency,
+    timing_consistency_track,
+    timing_consistency_track_permuted,
     weekday_regularity,
 )
 
@@ -38,6 +40,8 @@ __all__ = [
     "Outlook",
     "consistency_report",
     "timing_consistency",
+    "timing_consistency_track",
+    "timing_consistency_track_permuted",
     "anchor_precision",
     "weekday_regularity",
     "prequential_timing_bits",

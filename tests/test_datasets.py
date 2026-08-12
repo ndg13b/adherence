@@ -14,6 +14,7 @@ import zipfile
 import numpy as np
 import pytest
 
+from adherence.events import EventLog
 from adherence.datasets import (
     DUOLINGO_COLUMNS,
     hour_of_day_histogram,
@@ -169,13 +170,49 @@ def test_inclusion_thresholds_are_applied(synthetic):
     assert all(len(v) >= 25 for v in strict.logs.values())
 
 
-def test_all_people_share_one_observation_window(synthetic):
-    """Rates are only comparable if exposure is measured on a common window."""
-    res = load_duolingo(synthetic, sample_pct=100.0, min_events=5, min_days=3,
-                        verbose=False)
-    starts = {v.t_start for v in res.logs.values()}
-    ends = {v.t_end for v in res.logs.values()}
-    assert len(starts) == 1 and len(ends) == 1
+def test_observation_window_modes(synthetic):
+    """Per-person exposure by default; a shared window on request.
+
+    The default matters on datasets spanning years: the binned indices build a
+    day-by-bin grid over the window, so handing someone observed for six months
+    a decade-long grid makes it ~99% empty and pins SRI near 100 for everyone.
+    """
+    kw = dict(sample_pct=100.0, min_events=5, min_days=3, verbose=False)
+    per_person = load_duolingo(synthetic, window="person", **kw)
+    shared = load_duolingo(synthetic, window="global", **kw)
+
+    assert len({v.t_start for v in shared.logs.values()}) == 1
+    assert len({v.t_start for v in per_person.logs.values()}) > 1
+    for log in per_person.logs.values():
+        assert log.t_start == log.t[0] and log.t_end == log.t[-1]
+
+
+def test_person_window_keeps_binned_indices_meaningful():
+    """An over-long observation window destroys the binned indices.
+
+    The same flawlessly regular person -- 60 consecutive days at 08:00 -- scores
+    Interdaily Stability 1.0 on their own window and 0.016 inside a ten-year
+    one, because the day-by-bin grid is then almost entirely empty and the
+    between-day variance the index divides by is all padding. That is a
+    sixtyfold distortion driven purely by bookkeeping, and it is why the
+    per-person window is the default.
+
+    SRI cannot demonstrate it: a perfect routine already pins it at 100, with no
+    headroom to move. Its failure mode on a stretched window is the opposite --
+    everyone gets pinned near the ceiling together.
+    """
+    from datetime import datetime, timezone
+
+    from adherence.baselines import interdaily_stability, sleep_regularity_index
+
+    base = datetime(2015, 1, 5, tzinfo=timezone.utc).timestamp()
+    t = np.array([base + d * 86400 + 8 * 3600 for d in range(60)])
+    own = EventLog.from_records(t, t_start=t[0], t_end=t[-1])
+    stretched = EventLog.from_records(t, t_start=t[0], t_end=t[0] + 3650 * 86400)
+
+    assert interdaily_stability(own) > 0.9
+    assert interdaily_stability(stretched) < 0.1
+    assert sleep_regularity_index(stretched) > 99.0  # pinned, not informative
 
 
 def test_epoch_ms_and_iso_time_formats(tmp_path):
@@ -285,3 +322,81 @@ def test_fitrec_localisation_recovers_local_hour(tmp_path):
     assert local[5:21].sum() > 0.95
     assert raw[5:21].sum() < local[5:21].sum() - 0.1
     assert local[2:5].sum() < raw[2:5].sum() / 3.0
+
+
+def test_retention_pipeline_recovers_a_known_hazard_ratio(tmp_path):
+    """End-to-end: file -> loader -> run-in score -> Cox fit, against known truth.
+
+    The generator links irregularity to quitting with a specified log hazard
+    ratio. Every stage between the file and the coefficient is exercised, so a
+    break anywhere -- a mis-parsed timestamp, a leaking run-in window, a sign
+    flip in the covariate -- shows up as a coefficient pointing the wrong way.
+    """
+    import importlib.util
+
+    from adherence.datasets import load_fitrec, write_synthetic_fitrec
+
+    spec = importlib.util.spec_from_file_location(
+        "ret", str(__import__("pathlib").Path(__file__).parent.parent
+                   / "examples" / "fitrec_retention.py"))
+    ret = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ret)
+
+    p = write_synthetic_fitrec(str(tmp_path / "linked.json"), n_users=500, days=700,
+                               dropout_hazard=0.004, log_hazard_ratio=1.0, seed=3)
+    res = load_fitrec(p, sample_pct=100.0, min_events=20, min_days=120, verbose=False)
+    end = max(v.t[-1] for v in res.logs.values())
+    rows, _ = ret.build_cohort(res.logs, 90.0, end, 120.0, 8)
+
+    assert len(rows) > 100
+    event = np.array([r[3] for r in rows])
+    assert 0.1 < event.mean() < 0.95, "need both events and censoring to fit"
+
+    from adherence.survival import cox_ph
+
+    s = np.array([r[0] for r in rows])
+    x = -(s - s.mean()) / s.std()  # irregularity
+    fit = cox_ph(x[:, None], np.array([r[2] for r in rows]), event)
+    assert fit.converged
+    assert fit.coef[0] > 0, "irregular people were simulated to quit sooner"
+    assert fit.p[0] < 0.05
+
+
+def test_group_comparison_separates_effect_from_no_effect(tmp_path):
+    """The plain stopped-vs-stayed contrast must track the built-in truth.
+
+    A survival model can be right while being impossible to eyeball, so the
+    descriptive comparison has to be trustworthy on its own terms: flat when
+    nothing was built in, graded when something was.
+    """
+    import importlib.util
+    import pathlib
+
+    from adherence.datasets import load_fitrec, write_synthetic_fitrec
+
+    spec = importlib.util.spec_from_file_location(
+        "ret", str(pathlib.Path(__file__).parent.parent / "examples"
+                   / "fitrec_retention.py"))
+    ret = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ret)
+
+    out = {}
+    for lhr in (0.0, 1.0):
+        p = write_synthetic_fitrec(str(tmp_path / f"g{lhr}.json"), n_users=350,
+                                   days=700, dropout_hazard=0.004,
+                                   log_hazard_ratio=lhr, seed=3)
+        res = load_fitrec(p, sample_pct=100.0, min_events=20, min_days=120,
+                          verbose=False)
+        end = max(v.t[-1] for v in res.logs.values())
+        rows, _ = ret.build_cohort(res.logs, 90.0, end, 120.0, 8)
+        out[lhr] = ret.compare_groups(rows, quiet=True)
+
+    assert abs(out[0.0]["cohens_d"]) < 0.3, "no link -> groups should overlap"
+    assert out[1.0]["cohens_d"] > 0.8, "strong link -> stayers clearly more consistent"
+
+    # And the dropout gradient across quintiles should appear only with a link.
+    def spread(stats):
+        v = [q["stopped"] for q in stats["quintiles"]]
+        return max(v) - min(v)
+
+    assert spread(out[1.0]) > spread(out[0.0]) + 0.2
